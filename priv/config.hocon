@@ -1,0 +1,15 @@
+## Broker suggested server name.
+## When the MCP over MQTT server connects to the Broker, the Broker can include a suggested server name in the CONNACK packet using the MCP-SERVER-NAME user property. This allows the MCP server to replace its original server name with the suggested server name.
+## This feature can be used to maintain a unified server name structure across the entire system, avoiding issues such as naming conflicts or non-standard naming caused by the MCP server's own server name.
+broker_suggested_server_name.enable = true
+
+## The CSV file from which the plugin can load server names from.
+broker_suggested_server_name.load_file = "/tmp/server_names"
+
+## STDIO MCP servers
+stdio_servers.calc {
+    server_name = "stdio/demo/calc"
+    server_desc = "A demo MCP server for stdio, which provides a simple calculator to get summary of 2 numbers."
+    command = "/tmp/venv-mcp/bin/python3"
+    args = ["/tmp/venv-mcp/calculator.py"]
+}

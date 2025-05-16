@@ -1,0 +1,27 @@
+{
+  "$enable_broker_suggested_server_name": {
+    "zh": "启用 Broker 建议的服务名称",
+    "en": "Enable Broker Suggested Server Name"
+  },
+  "$server_name": {
+    "zh": "服务名称",
+    "en": "Server Name"
+  },
+  "$server_desc": {
+    "zh": "服务描述",
+    "en": "Service Description"
+  },
+  "$command": {
+    "zh": "命令",
+    "en": "Command"
+  },
+  "$args": {
+    "zh": "参数",
+    "en": "Arguments"
+  },
+  "$env": {
+    "zh": "环境变量",
+    "en": "Environment Variables"
+  }
+}
+

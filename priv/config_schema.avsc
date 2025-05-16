@@ -1,0 +1,117 @@
+{
+  "type": "record",
+  "name": "MCPGatewayConfig",
+  "fields": [
+    {
+      "name": "broker_suggested_server_name",
+      "type": {
+        "type": "record",
+        "name": "BrokerSuggServerNameConfig",
+        "fields": [
+          {
+            "name": "enable",
+            "type": "boolean",
+            "default": true,
+            "$ui": {
+              "component": "switch",
+              "flex": 12,
+              "required": false,
+              "label": "$enable_broker_suggested_server_name"
+            }
+          },
+          {
+            "name": "load_file",
+            "type": "string",
+            "$ui": {
+              "component": "input",
+              "flex": 24,
+              "required": false,
+              "label": "$load_file"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "stdio_servers",
+      "type": {
+        "type": "map",
+        "values": {
+          "type": "record",
+          "name": "ServerConfig",
+          "fields": [
+            {
+              "name": "enable",
+              "type": "boolean",
+              "default": true,
+              "$ui": {
+                "component": "switch",
+                "flex": 12,
+                "required": false,
+                "label": "$enable"
+              }
+            },
+            {
+              "name": "server_name",
+              "type": "string",
+              "$ui": {
+                "component": "input",
+                "flex": 12,
+                "required": true,
+                "label": "$server_name"
+              }
+            },
+            {
+              "name": "server_desc",
+              "type": "string",
+              "$ui": {
+                "component": "input",
+                "flex": 12,
+                "required": false,
+                "label": "$server_desc"
+              }
+            },
+            {
+              "name": "command",
+              "type": "string",
+              "$ui": {
+                "component": "input",
+                "flex": 24,
+                "required": true,
+                "label": "$command"
+              }
+            },
+            {
+              "name": "args",
+              "type": {
+                "type": "array",
+                "items": "string"
+              },
+              "default": [],
+              "$ui": {
+                "component": "input-array",
+                "flex": 12,
+                "required": false,
+                "label": "$args"
+              }
+            },
+            {
+              "name": "env",
+              "type": {
+                "type": "map",
+                "values": "string"
+              },
+              "default": {},
+              "$ui": {
+                "component": "key-value-editor",
+                "flex": 12,
+                "required": false,
+                "label": "$env"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
