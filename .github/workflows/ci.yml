@@ -23,11 +23,17 @@ jobs:
         otp-version: "27"
         rebar3-version: "3"
 
+    - name: Check Version
+      run: ./scripts/check-vsn.sh
+
     - name: Check format
       run: make fmt-check
 
     - name: Run tests
-      run: make run test
+      run: |
+        make run
+        make eunit
+        make ct
 
   release:
     name: Publish release
@@ -45,7 +51,7 @@ jobs:
     - name: Setup Erlang
       uses: erlef/setup-beam@v1
       with:
-        otp-version: "27"
+        otp-version: "26"
         rebar3-version: "3"
 
     - name: Build Release

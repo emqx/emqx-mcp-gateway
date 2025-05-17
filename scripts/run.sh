@@ -7,7 +7,9 @@ set -euo pipefail
 
 cd -P -- "$(dirname -- "$0")/../"
 
+PLUGIN="emqx_mcp_gateway"
 PLUGIN_VSN="$(grep -o 'plugin_rel_vsn, "[^"]*"' rebar.config | cut -d'"' -f2)"
+PLUGIN_NAME_VSN="$PLUGIN-$PLUGIN_VSN"
 
 HAPROXY_PORTS=(-p 18083:18083 -p 1883:1883)
 
@@ -80,14 +82,38 @@ function run_emqx() {
       -e EMQX_NODE_COOKIE="$COOKIE" \
       -e EMQX_NODE__ROLE="$role" \
       -e EMQX_LICENSE__KEY="${LICENSE_KEY}" \
-      -e EMQX_PLUGINS__STATES="[{enable = true, name_vsn = \"emqx_mcp_gateway-${PLUGIN_VSN}\"}]" \
+      -e EMQX_PLUGINS__STATES="[{enable = true, name_vsn = \"$PLUGIN_NAME_VSN\"}]" \
       -v $(pwd)/_build/default/emqx_plugrel:/opt/emqx/plugins \
+      -v $(pwd)/test/config:/opt/emqx/data/plugins/$PLUGIN \
+      -v $(pwd)/test/data:/tmp/test_data \
       "$IMAGE"
+}
+
+init_python_env() {
+    local container="$1"
+
+    docker exec -t -u root:root "$container" bash -c '\
+        apt update && \
+        apt install python3-venv -y && \
+        python3 -m venv /tmp/venv-mcp && \
+        source /tmp/venv-mcp/bin/activate && \
+        python3 -m pip install --no-cache-dir --upgrade pip && \
+        python -m pip install "mcp[cli]"'
+}
+
+restart_plugin() {
+    local container="$1"
+    docker exec -t "$container" emqx ctl plugins stop $PLUGIN_NAME_VSN
+    docker exec -t "$container" emqx ctl plugins start $PLUGIN_NAME_VSN
 }
 
 run_emqx "$NODE1" "$NODE1" "core"
 run_emqx "$NODE2" "$NODE2" "core"
 run_emqx "$NODE3" "$NODE3" "replicant"
+
+init_python_env "$NODE1"
+init_python_env "$NODE2"
+init_python_env "$NODE3"
 
 mkdir -p tmp
 cat <<EOF > tmp/haproxy.cfg
@@ -167,6 +193,8 @@ wait_for_running_nodes() {
     local wait_limit="$3"
     local wait_sec=0
     while [ "${wait_sec}" -lt "${wait_limit}" ]; do
+        echo 'docker exec -t "$container" emqx ctl cluster status --json'
+        docker exec -t "$container" emqx ctl cluster status --json
         running_nodes="$(docker exec -t "$container" emqx ctl cluster status --json | jq '.running_nodes | length')"
         if [ "${running_nodes}" -eq "${expected_running_nodes}" ]; then
             echo "Successfully confirmed ${running_nodes} running nodes."
@@ -197,15 +225,15 @@ wait_for_running_nodes "$NODE3" "3" 30
 validate_plugin() {
     local container="$1"
     local plugin_info
-    plugin_info=$(docker exec -t "$container" emqx ctl plugins list | jq -r '.[] | select(.name == "emqx_mcp_gateway")')
+    plugin_info=$(docker exec -t "$container" emqx ctl plugins list | jq -r '.[] | select(.name == "'$PLUGIN'")')
     if [ -z "$plugin_info" ]; then
-        echo "Error: Plugin emqx_mcp_gateway not found in node $container"
+        echo "Error: Plugin $PLUGIN not found in node $container"
         exit 1
     fi
     local plugin_vsn
     plugin_vsn=$(echo "$plugin_info" | jq -r '.rel_vsn')
     if [ "$plugin_vsn" != "$PLUGIN_VSN" ]; then
-        echo "Error: Plugin version mismatch. Expected $PLUGIN_VSN but got $plugin_vsn in node $container"
+        echo "Error: Plugin version mismatch. Expected [$PLUGIN_VSN] but got [$plugin_vsn] in node $container"
         exit 1
     fi
     local running_status
@@ -216,7 +244,11 @@ validate_plugin() {
     fi
 }
 
+restart_plugin "$NODE1"
+restart_plugin "$NODE2"
+restart_plugin "$NODE3"
+
 validate_plugin "$NODE1"
 validate_plugin "$NODE2"
 validate_plugin "$NODE3"
-echo "Plugin emqx_mcp_gateway-${PLUGIN_VSN} is running in all nodes."
+echo "Plugin $PLUGIN_NAME_VSN is running in all nodes."

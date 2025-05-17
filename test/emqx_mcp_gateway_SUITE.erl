@@ -19,53 +19,39 @@
 -compile(export_all).
 -compile(nowarn_export_all).
 
--include_lib("emqx/include/emqx.hrl").
+-include_lib("emqx_plugin_helper/include/emqx.hrl").
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("common_test/include/ct.hrl").
+-include_lib("emqx_mcp_gateway/include/emqx_mcp_gateway.hrl").
 
--define(SERVER_NAME, <<"test/calculator">>).
+-define(SERVER_NAME, <<"stdio/demo/calc">>).
 
-all() -> emqx_common_test_helpers:all(?MODULE).
+all() ->
+    [
+        F
+     || {F, _} <- ?MODULE:module_info(exports),
+        is_test_function(F)
+    ].
+
+is_test_function(F) ->
+    case atom_to_list(F) of
+        "t_" ++ _ -> true;
+        _ -> false
+    end.
 
 %%========================================================================
 %% Init
 %%========================================================================
 init_per_suite(Config) ->
-    DataDir = filename:join([?config(data_dir, Config), "..", "SUITE_data"]),
-    emqx_config:put(
-        [mcp],
-        #{
-            enable => true,
-            broker_suggested_server_name => #{
-                enable => false
-            },
-            servers => #{
-                calc => #{
-                    args => [
-                        filename:join([DataDir, <<"calculator.py">>])
-                    ],
-                    env => #{},
-                    command => <<"/tmp/venv-mcp/bin/python3">>,
-                    enable => true,
-                    server_name => ?SERVER_NAME,
-                    server_type => stdio
-                }
-            }
-        }
-    ),
-    Apps = emqx_cth_suite:start([emqx, emqx_ctl, emqx_mcp_gateway], #{
-        work_dir => emqx_cth_suite:work_dir(Config)
-    }),
-    [{apps, Apps} | Config].
+    Config.
 
-end_per_suite(Config) ->
-    emqx_cth_suite:stop(?config(apps, Config)).
+end_per_suite(_Config) ->
+    ok.
 
 %%========================================================================
 %% Test cases
 %%========================================================================
 t_mcp_normal_msg_flow(_) ->
-    true = emqx:is_running(node()),
     McpClientId = <<"myclient">>,
     {ok, C} = emqtt:start_link([
         {host, "localhost"},
@@ -74,10 +60,6 @@ t_mcp_normal_msg_flow(_) ->
     ]),
     {ok, _} = emqtt:connect(C),
 
-    % dbg:tracer(),
-    % dbg:p(all, c),
-    % dbg:tpl(emqx_mcp_gateway, on_session_subscribed, '_', cx),
-    %% Subscribe to the server presence topic
     {ok, _, [1]} = emqtt:subscribe(C, <<"$mcp-server/presence/#">>, qos1),
     ct:sleep(100),
     {ServerId, ServerName} =

@@ -1,0 +1,14 @@
+broker_suggested_server_name {
+  enable = true
+  load_file = "/tmp/test_data/server_names.csv"
+}
+stdio_servers {
+  calc {
+    args = [
+      "/tmp/test_data/calculator.py"
+    ]
+    command = "/tmp/venv-mcp/bin/python3"
+    server_desc = "A demo MCP server for stdio, which provides a simple calculator to get summary of 2 numbers."
+    server_name = "stdio/demo/calc"
+  }
+}
