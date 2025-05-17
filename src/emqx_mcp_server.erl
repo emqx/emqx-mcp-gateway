@@ -402,9 +402,11 @@ handle_common_info(State, Msg, #{mod := Mod, mcp_state := McpState0} = LoopData)
         {ok, McpState} ->
             {keep_state, LoopData#{mcp_state => McpState}};
         {stop, Reason} ->
-            ?SLOG(error, #{msg => stop_on_unexpected_msg, info => Msg, reason => Reason, state => State}),
+            ?SLOG(error, #{
+                msg => stop_on_unexpected_msg, info => Msg, reason => Reason, state => State
+            }),
             shutdown(#{error => Reason})
-    end.    
+    end.
 
 handle_mcp_server_log_msg(Msg, LoopData) ->
     ?SLOG(debug, #{msg => received_non_json_msg_from_mcp_server, details => Msg}),

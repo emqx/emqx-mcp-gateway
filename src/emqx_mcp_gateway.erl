@@ -286,20 +286,24 @@ on_session_subscribed(_, <<"$mcp-server/presence/", ServerIdAndName/binary>> = _
             _ -> throw({error, {invalid_server_name_filter, ServerIdAndName}})
         end,
     foreach_configured_mcp_server(
-        fun (_, _Name, #{<<"server_name">> := ServerName} = ServerConf) ->
+        fun(_, _Name, #{<<"server_name">> := ServerName} = ServerConf) ->
             case maps:get(<<"enable">>, ServerConf, true) of
                 true ->
                     case emqx_topic:match(ServerName, ServerNameFilter) of
                         true ->
                             ServerDesc = maps:get(<<"server_desc">>, ServerConf, <<>>),
                             ServerMeta = server_meta(ServerName),
-                            emqx_mcp_message:send_server_online_message(ServerName, ServerDesc, ServerMeta);
+                            emqx_mcp_message:send_server_online_message(
+                                ServerName, ServerDesc, ServerMeta
+                            );
                         false ->
                             ok
                     end;
-                false -> ok
+                false ->
+                    ok
             end
-        end),
+        end
+    ),
     ok;
 on_session_subscribed(_, _Topic, _SubOpts) ->
     %% Ignore other topics
@@ -350,16 +354,22 @@ unhook(HookPoint, MFA) ->
 %%==============================================================================
 foreach_configured_mcp_server(Fun) ->
     Config = get_config(),
-    lists:foreach(fun(T) ->
-           case maps:get(T, Config, undefined) of
-               undefined ->
+    lists:foreach(
+        fun(T) ->
+            case maps:get(T, Config, undefined) of
+                undefined ->
                     ok;
-               ServerConfs ->
-                    maps:foreach(fun(Name, ServerConf) ->
+                ServerConfs ->
+                    maps:foreach(
+                        fun(Name, ServerConf) ->
                             Fun(T, Name, ServerConf)
-                       end, ServerConfs)
-           end
-        end, [<<"stdio_servers">>, <<"http_servers">>, <<"internal_servers">>]).
+                        end,
+                        ServerConfs
+                    )
+            end
+        end,
+        [<<"stdio_servers">>, <<"http_servers">>, <<"internal_servers">>]
+    ).
 
 start_mcp_servers() ->
     foreach_configured_mcp_server(fun start_mcp_server/3).
