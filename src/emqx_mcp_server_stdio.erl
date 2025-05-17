@@ -23,7 +23,8 @@
     connect_server/1,
     unpack/2,
     send_msg/2,
-    handle_close/1
+    handle_close/1,
+    handle_info/2
 ]).
 
 -define(LINE_BYTES, 4096).
@@ -35,8 +36,7 @@ connect_server(#{<<"command">> := Cmd} = Conf) ->
     ?SLOG(debug, #{msg => connect_server, cmd => Cmd, args => Args, env => Env}),
     try
         Port = open_port(Cmd, Args, Env),
-        MonRef = erlang:monitor(port, Port),
-        {ok, #{port => Port, port_mon => MonRef}}
+        {ok, #{port => Port}}
     catch
         error:Reason ->
             {error, Reason}
@@ -55,13 +55,12 @@ unpack({_Port, {data, Data}}, State) ->
         _ ->
             {error, {invalid_port_data, Data}}
     end;
-unpack({'DOWN', MonRef, port, _Port, _Reason}, #{port_mon := MonRef} = State) ->
-    handle_close(State),
-    {stop, port_closed};
+unpack({'EXIT', Port, Reason}, #{port := Port}) ->
+    {stop, {port_exit, Reason}};
 unpack(Data, _State) ->
     {error, {unexpected_stdio_data, Data}}.
 
-send_msg(#{port := Port} = State, Msg) ->
+send_msg(Msg, #{port := Port} = State) ->
     try
         true = erlang:port_command(Port, [Msg, io_lib:nl()]),
         {ok, State}
@@ -70,9 +69,17 @@ send_msg(#{port := Port} = State, Msg) ->
             {error, badarg}
     end.
 
-handle_close(#{port := Port, port_mon := MonRef}) ->
-    erlang:demonitor(MonRef, [flush]),
-    erlang:port_close(Port),
+handle_info({Port, {data, {_, Data}}}, #{port := Port} = State) ->
+    ?SLOG(error, #{msg => unexpected_port_data, data => Data}),
+    {ok, State};
+handle_info({'EXIT', Port, Reason}, #{port := Port}) ->
+    {stop, {port_exit, Reason}}.
+
+handle_close(#{port := Port}) ->
+    case erlang:port_info(Port) of
+        undefined -> ok;
+        _ -> erlang:port_close(Port)
+    end,
     ok;
 handle_close(_) ->
     ok.

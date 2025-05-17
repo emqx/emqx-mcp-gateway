@@ -142,9 +142,8 @@ code_change(_OldVsn, State, _Extra) ->
 %% Import From CSV
 %%--------------------------------------------------------------------
 load_server_names() ->
-    case maps:get(<<"broker_suggested_server_name">>, emqx_mcp_gateway:get_config(), #{}) of
-        #{<<"enable">> := false} ->
-            ok;
+    case maps:get(<<"broker_suggested_server_name">>, emqx_mcp_gateway:get_config(), #{<<"enable">> => true}) of
+        #{<<"enable">> := false} -> ok;
         #{<<"enable">> := true, <<"bootstrap_file">> := FileName} when is_binary(FileName) ->
             case mnesia:dirty_first(?TAB) of
                 '$end_of_table' ->
@@ -155,9 +154,7 @@ load_server_names() ->
                     %% Already loaded
                     ok
             end;
-        _ ->
-            %% No bootstrap file specified
-            ok
+        _ -> ok
     end.
 
 load_from_csv(File) ->

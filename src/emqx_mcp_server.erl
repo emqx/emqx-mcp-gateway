@@ -96,13 +96,14 @@
 }.
 
 -callback connect_server(mcp_server_config()) -> {ok, mcp_state()} | {error, Reason :: term()}.
--callback unpack(mcp_state(), binary()) ->
+-callback unpack(binary(), mcp_state()) ->
     {ok, binary(), mcp_state()}
     | {more, mcp_state()}
     | {stop, Reason :: term()}
     | {error, Reason :: term()}.
--callback send_msg(mcp_state(), binary()) -> {ok, mcp_state()} | {error, Reason :: term()}.
+-callback send_msg(binary(), mcp_state()) -> {ok, mcp_state()} | {error, Reason :: term()}.
 -callback handle_close(mcp_state()) -> ok.
+-callback handle_info(term(), mcp_state()) -> {ok, mcp_state()} | {stop, Reason :: term()}.
 
 -define(CLIENT_INFO, #{
     <<"name">> => <<"emqx-mcp-gateway">>,
@@ -272,7 +273,7 @@ server_initialized(info, Info, #{mod := Mod, mcp_state := McpState} = LoopData0)
                 {error, #{reason := ?ERR_INVALID_JSON}} ->
                     handle_mcp_server_log_msg(Msg, LoopData);
                 {error, _Reason} ->
-                    handle_unexpected_msg(server_initialized, Msg, LoopData)
+                    handle_common_info(server_initialized, Msg, LoopData)
             end;
         {more, McpState1} ->
             {keep_state, LoopData0#{mcp_state => McpState1}};
@@ -284,7 +285,7 @@ server_initialized(info, Info, #{mod := Mod, mcp_state := McpState} = LoopData0)
 server_initialized(
     {call, From}, {rpc, RpcMsg}, #{mod := Mod, mcp_state := McpState} = LoopData
 ) ->
-    case Mod:send_msg(McpState, RpcMsg) of
+    case Mod:send_msg(RpcMsg, McpState) of
         {ok, McpState1} ->
             {keep_state, LoopData#{mcp_state => McpState1}, [{reply, From, ok}]};
         {error, Reason} ->
@@ -320,7 +321,7 @@ handle_common(_State, state_timeout, TimeoutReason, _LoopData) ->
 handle_common(_State, cast, stop, _LoopData) ->
     shutdown(#{error => normal});
 handle_common(State, info, Info, LoopData) ->
-    handle_unexpected_msg(State, Info, LoopData);
+    handle_common_info(State, Info, LoopData);
 handle_common(State, EventType, EventContent, _LoopData) ->
     ?SLOG(error, #{
         msg => unexpected_msg,
@@ -359,7 +360,7 @@ forward_initialize_request(
         mcp_state := McpState
     } = LoopData
 ) ->
-    case Mod:send_msg(McpState, RawInitReq) of
+    case Mod:send_msg(RawInitReq, McpState) of
         {ok, McpState1} ->
             {ok, LoopData#{
                 pending_requests => PendingReqs#{
@@ -396,13 +397,14 @@ handle_initialize_response(Resp, LoopData) ->
             Err
     end.
 
-handle_unexpected_msg(State, Msg, LoopData) ->
-    ?SLOG(error, #{
-        msg => unexpected_common_msg,
-        state => State,
-        event_content => Msg
-    }),
-    {keep_state, LoopData}.
+handle_common_info(State, Msg, #{mod := Mod, mcp_state := McpState0} = LoopData) ->
+    case Mod:handle_info(Msg, McpState0) of
+        {ok, McpState} ->
+            {keep_state, LoopData#{mcp_state => McpState}};
+        {stop, Reason} ->
+            ?SLOG(error, #{msg => stop_on_unexpected_msg, info => Msg, reason => Reason, state => State}),
+            shutdown(#{error => Reason})
+    end.    
 
 handle_mcp_server_log_msg(Msg, LoopData) ->
     ?SLOG(debug, #{msg => received_non_json_msg_from_mcp_server, details => Msg}),

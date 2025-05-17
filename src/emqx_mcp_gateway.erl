@@ -286,8 +286,8 @@ on_session_subscribed(_, <<"$mcp-server/presence/", ServerIdAndName/binary>> = _
             _ -> throw({error, {invalid_server_name_filter, ServerIdAndName}})
         end,
     foreach_configured_mcp_server(
-        fun (_, #{<<"server_name">> := ServerName} = ServerConf) ->
-            case maps:get(<<"enable">>, ServerConf, false) of
+        fun (_, _Name, #{<<"server_name">> := ServerName} = ServerConf) ->
+            case maps:get(<<"enable">>, ServerConf, true) of
                 true ->
                     case emqx_topic:match(ServerName, ServerNameFilter) of
                         true ->
@@ -353,29 +353,26 @@ foreach_configured_mcp_server(Fun) ->
     lists:foreach(fun(T) ->
            case maps:get(T, Config, undefined) of
                undefined ->
-                   ok;
+                    ok;
                ServerConfs ->
-                   Fun(T, ServerConfs)
+                    maps:foreach(fun(Name, ServerConf) ->
+                            Fun(T, Name, ServerConf)
+                       end, ServerConfs)
            end
         end, [<<"stdio_servers">>, <<"http_servers">>, <<"internal_servers">>]).
 
 start_mcp_servers() ->
-    foreach_configured_mcp_server(fun start_mcp_servers/2).
+    foreach_configured_mcp_server(fun start_mcp_server/3).
 
-start_mcp_servers(ServerType, ServerConfs) ->
-    maps:foreach(fun(Name, ServerConf) ->
-        start_mcp_server(Name, ServerType, ServerConf)
-    end, ServerConfs).
-
-start_mcp_server(Name, ServerType, #{<<"server_name">> := ServerName} = ServerConf) ->
+start_mcp_server(ServerType, Name, #{<<"server_name">> := ServerName} = ServerConf) ->
     case maps:get(<<"enable">>, ServerConf, true) of
         true ->
-            start_mcp_server(Name, ServerType, ServerName, ServerConf);
+            start_mcp_server(ServerType, Name, ServerName, ServerConf);
         false ->
             ok
     end.
 
-start_mcp_server(Name, ServerType, ServerName, ServerConf) ->
+start_mcp_server(ServerType, Name, ServerName, ServerConf) ->
     Conf = #{
         name => Name,
         server_name => ServerName,
