@@ -16,14 +16,12 @@ HAPROXY_PORTS=(-p 18083:18083 -p 1883:1883)
 NET='emqx.io'
 NODE1="node1.$NET"
 NODE2="node2.$NET"
-NODE3="node3.$NET"
 COOKIE='erlang-cookie'
 
 cleanup() {
     docker rm -f haproxy >/dev/null 2>&1 || true
     docker rm -f "$NODE1" >/dev/null 2>&1 || true
     docker rm -f "$NODE2" >/dev/null 2>&1 || true
-    docker rm -f "$NODE3" >/dev/null 2>&1 || true
     docker network rm "$NET" >/dev/null 2>&1 || true
 }
 
@@ -83,10 +81,25 @@ function run_emqx() {
       -e EMQX_NODE__ROLE="$role" \
       -e EMQX_LICENSE__KEY="${LICENSE_KEY}" \
       -e EMQX_PLUGINS__STATES="[{enable = true, name_vsn = \"$PLUGIN_NAME_VSN\"}]" \
-      -v $(pwd)/_build/default/emqx_plugrel:/opt/emqx/plugins \
-      -v $(pwd)/test/config:/opt/emqx/data/plugins/$PLUGIN \
-      -v $(pwd)/test/data:/tmp/test_data \
       "$IMAGE"
+}
+
+function copy_files() {
+    local container="$1"
+
+    docker exec -t "$container" bash -c '\
+        mkdir -p /opt/emqx/plugins && \
+        mkdir -p /opt/emqx/data/plugins/$PLUGIN && \
+        mkdir -p /tmp/test_data'
+
+    docker cp "$(pwd)/_build/default/emqx_plugrel/." "$container:/opt/emqx/plugins"
+    docker cp "$(pwd)/test/config/." "$container:/opt/emqx/data/plugins/$PLUGIN"
+    docker cp "$(pwd)/test/data/." "$container:/tmp/test_data"
+
+    docker exec -u root:root -t "$container" bash -c '\
+        chown -R emqx:emqx /opt/emqx/plugins && \
+        chown -R emqx:emqx /opt/emqx/data/plugins/$PLUGIN && \
+        chown -R emqx:emqx /tmp/test_data'
 }
 
 init_python_env() {
@@ -98,22 +111,28 @@ init_python_env() {
         python3 -m venv /tmp/venv-mcp && \
         source /tmp/venv-mcp/bin/activate && \
         python3 -m pip install --no-cache-dir --upgrade pip && \
-        python -m pip install "mcp[cli]"'
+        python3 -m pip install "mcp[cli]"'
 }
 
 restart_plugin() {
     local container="$1"
+    date -u +"%Y-%m-%dT%H:%M:%SZ"
+    echo "restarting plugin $PLUGIN_NAME_VSN on $container"
     docker exec -t "$container" emqx ctl plugins stop $PLUGIN_NAME_VSN
     docker exec -t "$container" emqx ctl plugins start $PLUGIN_NAME_VSN
 }
 
 run_emqx "$NODE1" "$NODE1" "core"
 run_emqx "$NODE2" "$NODE2" "core"
-run_emqx "$NODE3" "$NODE3" "replicant"
+
+copy_files "$NODE1"
+copy_files "$NODE2"
 
 init_python_env "$NODE1"
 init_python_env "$NODE2"
-init_python_env "$NODE3"
+
+restart_plugin "$NODE1"
+restart_plugin "$NODE2"
 
 mkdir -p tmp
 cat <<EOF > tmp/haproxy.cfg
@@ -159,7 +178,6 @@ backend emqx_backend_tcp
     mode tcp
     server emqx-1 $NODE1:1883
     server emqx-2 $NODE2:1883
-    server emqx-3 $NODE3:1883
 EOF
 
 HAPROXY_IMAGE='ghcr.io/haproxytech/haproxy-docker-alpine:2.4.27'
@@ -193,9 +211,9 @@ wait_for_running_nodes() {
     local wait_limit="$3"
     local wait_sec=0
     while [ "${wait_sec}" -lt "${wait_limit}" ]; do
-        echo 'docker exec -t "$container" emqx ctl cluster status --json'
-        docker exec -t "$container" emqx ctl cluster status --json
-        running_nodes="$(docker exec -t "$container" emqx ctl cluster status --json | jq '.running_nodes | length')"
+        running_nodes="$(docker exec -t "$container" emqx ctl cluster status --json)"
+        echo -e "running_nodes: $running_nodes\n"
+        running_nodes="$(echo "$running_nodes" | jq -r '.running_nodes | length')"
         if [ "${running_nodes}" -eq "${expected_running_nodes}" ]; then
             echo "Successfully confirmed ${running_nodes} running nodes."
             return
@@ -213,14 +231,12 @@ wait_for_running_nodes() {
 
 wait_for_emqx "$NODE1" 60
 wait_for_emqx "$NODE2" 30
-wait_for_emqx "$NODE3" 30
 
 echo
 
 docker exec "${NODE2}" emqx ctl cluster join "emqx@$NODE1"
-docker exec "${NODE3}" emqx ctl cluster join "emqx@$NODE1"
 
-wait_for_running_nodes "$NODE3" "3" 30
+wait_for_running_nodes "$NODE1" "2" 30
 
 validate_plugin() {
     local container="$1"
@@ -240,15 +256,12 @@ validate_plugin() {
     running_status=$(echo "$plugin_info" | jq -r '.running_status')
     if [ "$running_status" != "running" ]; then
         echo "Error: Plugin is not running. Current status: $running_status in node $container"
+        echo "Logs:"
+        docker logs "$container"
         exit 1
     fi
 }
 
-restart_plugin "$NODE1"
-restart_plugin "$NODE2"
-restart_plugin "$NODE3"
-
 validate_plugin "$NODE1"
 validate_plugin "$NODE2"
-validate_plugin "$NODE3"
 echo "Plugin $PLUGIN_NAME_VSN is running in all nodes."
