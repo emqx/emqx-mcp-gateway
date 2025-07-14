@@ -238,7 +238,7 @@ on_message_publish(
 on_message_publish(
     #message{
         from = McpClientId,
-        topic = <<"$mcp-client/capability/list-changed/", McpClientId/binary>>,
+        topic = <<"$mcp-client/capability/", McpClientId/binary>>,
         payload = ListChangedNotify
     } = Message
 ) ->
@@ -254,7 +254,7 @@ on_message_publish(
 on_message_publish(
     #message{
         from = McpClientId,
-        topic = <<"$mcp-rpc-endpoint/", ClientIdAndServerName/binary>>,
+        topic = <<"$mcp-rpc/", ClientIdAndServerName/binary>>,
         payload = RpcMsg
     } = Message
 ) ->

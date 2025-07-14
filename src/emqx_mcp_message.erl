@@ -165,17 +165,17 @@ topic_type_of_rpc_msg(_) ->
 get_topic(server_control, #{server_id := ServerId, server_name := ServerName}) ->
     <<"$mcp-server/", ServerId/binary, "/", ServerName/binary>>;
 get_topic(server_capability_list_changed, #{server_id := ServerId, server_name := ServerName}) ->
-    <<"$mcp-server/capability/list-changed/", ServerId/binary, "/", ServerName/binary>>;
+    <<"$mcp-server/capability/", ServerId/binary, "/", ServerName/binary>>;
 get_topic(server_resources_updated, #{server_id := ServerId, server_name := ServerName}) ->
-    <<"$mcp-server/capability/resource-updated/", ServerId/binary, "/", ServerName/binary>>;
+    <<"$mcp-server/capability/", ServerId/binary, "/", ServerName/binary>>;
 get_topic(server_presence, #{server_id := ServerId, server_name := ServerName}) ->
     <<"$mcp-server/presence/", ServerId/binary, "/", ServerName/binary>>;
 get_topic(client_presence, #{mcp_clientid := McpClientId}) ->
     <<"$mcp-client/presence/", McpClientId/binary>>;
 get_topic(client_capability_list_changed, #{mcp_clientid := McpClientId}) ->
-    <<"$mcp-client/capability/list-changed/", McpClientId/binary>>;
+    <<"$mcp-client/capability/", McpClientId/binary>>;
 get_topic(rpc, #{mcp_clientid := McpClientId, server_name := ServerName}) ->
-    <<"$mcp-rpc-endpoint/", McpClientId/binary, "/", ServerName/binary>>.
+    <<"$mcp-rpc/", McpClientId/binary, "/", ServerName/binary>>.
 
 send_server_online_message(ServerName, ServerDesc, ServerMeta) ->
     Payload = json_rpc_notification(<<"notifications/server/online">>, #{
@@ -206,7 +206,7 @@ publish_mcp_server_message(ServerName, McpClientId, TopicType, Flags, Payload) -
             'User-Property' => UserProps
         }
     },
-    QoS = 1,
+    QoS = 0,
     MqttMsg = emqx_message:make(ServerId, QoS, Topic, Payload, Flags, Headers),
     _ = emqx:publish(MqttMsg),
     ok.

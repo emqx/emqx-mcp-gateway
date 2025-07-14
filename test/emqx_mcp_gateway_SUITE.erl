@@ -74,7 +74,7 @@ t_mcp_normal_msg_flow(_) ->
             ct:fail(no_message)
         end,
     ?assertEqual(?SERVER_NAME, ServerName),
-    RpcTopic = <<"$mcp-rpc-endpoint/", McpClientId/binary, "/", ServerName/binary>>,
+    RpcTopic = <<"$mcp-rpc/", McpClientId/binary, "/", ServerName/binary>>,
 
     %% Subscribe to the RPC topic
     {ok, _, [1]} = emqtt:subscribe(C, #{}, [{RpcTopic, [{qos, qos1}, {nl, true}]}]),
