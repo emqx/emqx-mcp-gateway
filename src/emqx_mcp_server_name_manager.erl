@@ -98,7 +98,7 @@ backup_tables() -> {<<"mcp_server_name">>, [?TAB]}.
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
-get_server_name(Username) ->
+get_server_name(ConnInfo) ->
     case mnesia:dirty_read(?TAB, Username) of
         [] ->
             {error, not_found};

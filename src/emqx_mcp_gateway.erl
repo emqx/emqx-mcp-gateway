@@ -38,7 +38,6 @@
 ]).
 
 -export([
-    on_session_creating/1,
     on_client_connack/3,
     on_message_publish/1,
     on_session_subscribed/3
@@ -118,33 +117,21 @@ terminate(_Reason, _State) ->
 %%==============================================================================
 %% Hooks
 %%==============================================================================
-on_session_creating(
-    #{
-        conninfo := #{username := Username} = ConnInfo,
-        will_msg := WillMsg =
-            #message{
-                topic = <<"$mcp-server/presence/", ServerIdAndName/binary>>
-            }
-    } = ChannelData
-) ->
+on_client_connack(ConnInfo = #{mcp_server_name := SuggestedName}, success, ConnAckProps) ->
     UserPropsConn = maps:get('User-Property', maps:get(conn_props, ConnInfo, #{}), []),
     case proplists:get_value(?PROP_K_MCP_COMP_TYPE, UserPropsConn) of
         <<"mcp-server">> ->
             {ServerId, ServerName} = split_id_and_server_name(ServerIdAndName),
-            case get_broker_suggested_server_name(Username) of
-                {ok, ServerName} ->
-                    {ok, ChannelData};
+            case get_broker_suggested_server_name(ConnInfo) of
+                {ok, ServerName} -> %% not changed
+                    {ok, ConnAckProps};
                 {ok, SuggestedName} ->
-                    Topic1 =
+                    Topic =
                         <<"$mcp-server/presence/", ServerId/binary, "/", SuggestedName/binary>>,
-                    {ok, ChannelData#{
-                        conninfo => ConnInfo#{mcp_server_name => SuggestedName},
-                        will_msg => WillMsg#message{
-                            topic = Topic1
-                        }
-                    }};
-                _ ->
-                    {ok, ChannelData}
+                    erlang:put(mcp_server_presence_topic, Topic),
+                    {ok, add_broker_suggested_server_name(SuggestedName, ConnAckProps)};
+                {error, not_found} -> %% no server name configured
+                    {ok, ConnAckProps}
             end;
         ComponentType ->
             ?SLOG(warning, #{
@@ -153,17 +140,6 @@ on_session_creating(
             }),
             {ok, ChannelData}
     end;
-on_session_creating(ChannelData) ->
-    {ok, ChannelData}.
-
-on_client_connack(ConnInfo = #{mcp_server_name := SuggestedName}, success, ConnAckProps) ->
-    UserPropsConn = maps:get('User-Property', maps:get(conn_props, ConnInfo, #{}), []),
-    case proplists:get_value(?PROP_K_MCP_COMP_TYPE, UserPropsConn) of
-        <<"mcp-server">> ->
-            {ok, add_broker_suggested_server_name(SuggestedName, ConnAckProps)};
-        _ ->
-            {ok, ConnAckProps}
-    end;
 on_client_connack(_ConnInfo, _Rc, ConnAckProps) ->
     {ok, ConnAckProps}.
 
@@ -171,8 +147,12 @@ on_message_publish(#message{topic = <<"$mcp-server/capability", _/binary>>} = Me
     %% ignore capability notifications sent by mcp server
     {ok, Message};
 on_message_publish(#message{topic = <<"$mcp-server/presence", _/binary>>} = Message) ->
-    %% ignore online/offline notifications sent by mcp server
-    {ok, Message};
+    case erlang:get(mcp_server_presence_topic) of
+        undefined ->
+            {ok, Message};
+        Topic ->
+            {ok, Message#message{topic = Topic}}
+    end;
 on_message_publish(
     #message{
         from = McpClientId,
@@ -321,20 +301,16 @@ split_id_and_server_name(Str) ->
         _ -> throw({error, {invalid_id_and_server_name, Str}})
     end.
 
-get_broker_suggested_server_name(undefined) ->
-    undefined;
-get_broker_suggested_server_name(Username) ->
-    emqx_mcp_server_name_manager:get_server_name(Username).
+get_broker_suggested_server_name(ConnInfo) ->
+    emqx_mcp_server_name_manager:get_server_name(ConnInfo).
 
 register_hook() ->
-    %hook('session.creating', {?MODULE, on_session_creating, []}),
     hook('client.connack', {?MODULE, on_client_connack, []}),
     hook('message.publish', {?MODULE, on_message_publish, []}),
     hook('session.subscribed', {?MODULE, on_session_subscribed, []}),
     ok.
 
 unregister_hook() ->
-    %unhook('session.creating', {?MODULE, on_session_creating}),
     unhook('client.connack', {?MODULE, on_client_connack}),
     unhook('message.publish', {?MODULE, on_message_publish}),
     unhook('session.subscribed', {?MODULE, on_session_subscribed}),
