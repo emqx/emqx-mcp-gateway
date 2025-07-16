@@ -1,6 +1,6 @@
 broker_suggested_server_name {
   enable = true
-  load_file = "/tmp/test_data/server_names.csv"
+  load_file = "/tmp/test_data/server_names.json"
 }
 stdio_servers {
   calc {

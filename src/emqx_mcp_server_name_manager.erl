@@ -22,24 +22,19 @@
 
 -include_lib("emqx_plugin_helper/include/logger.hrl").
 
-%% Mnesia Tab APIs
--export([
-    table_name/0,
-    init_tables/0,
-    create_tables/0,
-    backup_tables/0
-]).
-
 %% API
 -export([
     start_link/0
 ]).
 
 -export([
-    load_from_csv/1,
-    get_server_name/1,
-    add_server_name/2,
-    delete_server_name/1
+    load_json_file/1,
+    match_server_name_rules/1,
+    match_server_name_rules/2,
+    add_server_name_rule/1,
+    get_server_name_rules/0,
+    put_server_name_rules/1,
+    delete_server_name_rule/1
 ]).
 
 %% gen_server callbacks
@@ -53,44 +48,18 @@
     code_change/3
 ]).
 
--export([match_all_spec/0, fuzzy_filter_fun/1, run_fuzzy_filter/2, format_server_name/1]).
-
 %% Types
 -define(SERVER, ?MODULE).
--define(TAB, emqx_mcp_server_name).
+-define(TAB_SERVER_NAME, {?MODULE, mcp_server_name}).
 
--record(mcp_server_name, {
-    username :: binary() | '_',
-    server_name :: binary() | '_',
-    meta = #{} :: map() | '_'
-}).
+-type mcp_server_name_rule() :: #{
+    id := integer(),
+    condition := binary(),
+    selector := tuple(),
+    server_name := binary(),
+    server_name_tmpl := binary()
+}.
 
-table_name() -> ?TAB.
-
-%%--------------------------------------------------------------------
-%% Mnesia bootstrap
-%%--------------------------------------------------------------------
--spec init_tables() -> ok.
-init_tables() ->
-    ok = mria:wait_for_tables(create_tables()).
-
-create_tables() ->
-    ok = mria:create_table(
-        ?TAB,
-        [
-            {type, ordered_set},
-            {storage, disc_copies},
-            {local_content, true},
-            {record_name, mcp_server_name},
-            {attributes, record_info(fields, mcp_server_name)}
-        ]
-    ),
-    [?TAB].
-
-%%------------------------------------------------------------------------------
-%% Data backup
-%%------------------------------------------------------------------------------
-backup_tables() -> {<<"mcp_server_name">>, [?TAB]}.
 
 %%--------------------------------------------------------------------
 %% API
@@ -98,20 +67,65 @@ backup_tables() -> {<<"mcp_server_name">>, [?TAB]}.
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
-get_server_name(ConnInfo) ->
-    case mnesia:dirty_read(?TAB, Username) of
+-spec load_json_file(binary()) -> {ok, binary()} | {error, term()}.
+match_server_name_rules(ConnContext) ->
+    case get_server_name_rules() of
         [] ->
             {error, not_found};
-        [#mcp_server_name{server_name = ServerName}] ->
-            {ok, ServerName}
+        ServerNameRules ->
+            match_server_name_rules(ServerNameRules, ConnContext)
     end.
 
-add_server_name(Username, ServerName) ->
-    Record = #mcp_server_name{username = Username, server_name = ServerName},
-    mria:dirty_write(?TAB, Record).
+-spec add_server_name_rule(mcp_server_name_rule()) -> ok.
+add_server_name_rule(Rule) ->
+    put_server_name_rules([Rule | get_server_name_rules()]).
 
-delete_server_name(Username) ->
-    mria:dirty_delete(?TAB, Username).
+get_server_name_rules() ->
+    persistent_term:get(?TAB_SERVER_NAME, []).
+
+put_server_name_rules(Rules) ->
+    persistent_term:put(?TAB_SERVER_NAME, Rules).
+
+delete_server_name_rule(Id) ->
+    Rules = get_server_name_rules(),
+    persistent_term:put(?TAB_SERVER_NAME, [R || #{id := Id0} = R <- Rules, Id0 =/= Id]).
+
+match_server_name_rules([], _ConnContext) ->
+    {error, not_found};
+match_server_name_rules([Rule | Rest], ConnContext) ->
+    case match_server_name_rule(Rule, ConnContext) of
+        {ok, ServerName} ->
+            {ok, ServerName};
+        {error, _} ->
+            match_server_name_rules(Rest, ConnContext)
+    end.
+
+match_server_name_rule(#{id := Id, selector := Selector, server_name_tmpl := Tmpl}, ConnContext) ->
+    Fields = maps:get(fields, Selector),
+    Where = maps:get(where, Selector, []),
+    try emqx_rule_runtime:evaluate_select(Fields, ConnContext, Where) of
+        {ok, SelectedData} ->
+            {ok, emqx_placeholder:proc_tmpl(Tmpl, SelectedData)};
+        false ->
+            {error, not_match}
+    catch
+        throw:Reason ->
+            ?SLOG(error, #{
+                msg => match_server_name_rule_failed,
+                id => Id,
+                reason => Reason
+            }),
+            {error, Reason};
+        Class:Error:St ->
+            ?SLOG(error, #{
+                msg => match_server_name_rule_failed,
+                id => Id,
+                class => Class,
+                error => Error,
+                stacktrace => St
+            }),
+            {error, {Class, Error}}
+    end.
 
 init([]) ->
     {ok, #{}, {continue, load_server_names}}.
@@ -149,28 +163,20 @@ load_server_names() ->
     of
         #{<<"enable">> := false} ->
             ok;
-        #{<<"enable">> := true, <<"bootstrap_file">> := FileName} when is_binary(FileName) ->
-            case mnesia:dirty_first(?TAB) of
-                '$end_of_table' ->
-                    %% No data in the table, load from CSV
-                    File = emqx_schema:naive_env_interpolation(FileName),
-                    load_from_csv(File);
-                _ ->
-                    %% Already loaded
-                    ok
-            end;
+        #{<<"enable">> := true, <<"load_file">> := File} when is_binary(File) ->
+            load_json_file(File);
         _ ->
             ok
     end.
 
-load_from_csv(File) ->
+load_json_file(File) ->
     maybe
         true ?= (core =:= mria_rlog:role()),
         {ok, ServerNamesBin} ?= file:read_file(File),
-        Stream = emqx_utils_stream:csv(ServerNamesBin, #{nullable => true, filter_null => true}),
-        ok ?= load_from_stream(Stream),
+        JsonL = emqx_utils_json:decode(ServerNamesBin, [return_maps]),
+        ok ?= load_from_json(JsonL),
         ?SLOG(info, #{
-            msg => "load_server_name_bootstrap_file_succeeded",
+            msg => "load_server_name_file_succeeded",
             file => File
         })
     else
@@ -178,48 +184,39 @@ load_from_csv(File) ->
         {error, _} = Error -> Error
     end.
 
-load_from_stream(Stream) ->
+load_from_json(JsonL) when is_list(JsonL) ->
     try
-        Lines = emqx_utils_stream:consume(Stream),
-        ServerNameRecords = [format_line(Line) || Line <- Lines],
-        lists:foreach(
-            fun(Record) ->
-                mria:dirty_write(?TAB, Record)
-            end,
-            ServerNameRecords
-        )
+        RulesWithIds = lists:zip(lists:seq(1, length(JsonL)), JsonL),
+        ServerNameRecords = [parse_rule(Id, Rule) || {Id, Rule} <- RulesWithIds],
+        put_server_name_rules(ServerNameRecords)
     catch
         error:Reason ->
             {error, Reason}
     end.
 
-format_line(#{<<"username">> := Username, <<"server_name">> := ServerName}) ->
-    #mcp_server_name{
-        username = Username,
-        server_name = ServerName
-    };
-format_line(Line) ->
-    throw({error, {invalid_line_format, Line}}).
-
-match_all_spec() ->
-    [{#mcp_server_name{_ = '_'}, [], ['$_']}].
-
-%% Fuzzy username funcs
-fuzzy_filter_fun([]) ->
-    undefined;
-fuzzy_filter_fun(Fuzzy) ->
-    {fun ?MODULE:run_fuzzy_filter/2, [Fuzzy]}.
-
-run_fuzzy_filter(_, []) ->
-    true;
-run_fuzzy_filter(
-    E = #mcp_server_name{username = Username},
-    [{username, like, UsernameSubStr} | Fuzzy]
-) ->
-    binary:match(Username, UsernameSubStr) /= nomatch andalso run_fuzzy_filter(E, Fuzzy).
-
-format_server_name(#mcp_server_name{username = Username, server_name = ServerName}) ->
+parse_rule(Id, #{<<"condition">> := SQL, <<"server_name">> := ServerName}) ->
     #{
-        username => Username,
-        server_name => ServerName
-    }.
+        id => Id,
+        condition => SQL,
+        selector => parse_sql(SQL),
+        server_name => ServerName,
+        server_name_tmpl => emqx_placeholder:preproc_tmpl(ServerName)
+    };
+parse_rule(_, Rule) ->
+    throw({error, {invalid_rule_format, Rule}}).
+
+parse_sql(SQL) ->
+    case emqx_rule_sqlparser:parse(SQL, #{with_from => false}) of
+        {ok, Select} ->
+            case emqx_rule_sqlparser:select_is_foreach(Select) of
+                true ->
+                    throw({foreach_not_allowed, #{sql => SQL}});
+                false ->
+                    #{
+                        fields => emqx_rule_sqlparser:select_fields(Select),
+                        where => emqx_rule_sqlparser:select_where(Select)
+                    }
+            end;
+        {error, Reason} ->
+            throw({invalid_sql, #{sql => SQL, reason => Reason}})
+    end.

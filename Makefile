@@ -53,6 +53,9 @@ fmt: $(REBAR)
 fmt-check: $(REBAR)
 	$(REBAR) fmt --verbose --check
 
+dialyzer: $(REBAR)
+	$(REBAR) dialyzer
+
 .PHONY: run
 run: rel
 	./scripts/run.sh emqx/emqx-enterprise:5.9.0

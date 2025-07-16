@@ -39,7 +39,7 @@ connect_server(#{<<"command">> := Cmd} = Conf) ->
         {ok, #{port => Port}}
     catch
         error:Reason ->
-            {error, Reason}
+            {error, #{cmd => Cmd, Args => Args, env => Env, reason => Reason}}
     end.
 
 unpack({_Port, {data, Data}}, State) ->

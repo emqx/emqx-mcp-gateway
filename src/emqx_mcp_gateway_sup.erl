@@ -25,7 +25,6 @@
 -define(SERVER, ?MODULE).
 
 start_link() ->
-    emqx_mcp_server_name_manager:init_tables(),
     supervisor:start_link({local, ?SERVER}, ?MODULE, []).
 
 init([]) ->

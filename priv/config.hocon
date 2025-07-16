@@ -4,7 +4,7 @@
 broker_suggested_server_name.enable = true
 
 ## The CSV file from which the plugin can load server names from.
-broker_suggested_server_name.load_file = "/tmp/server_names"
+broker_suggested_server_name.load_file = "/tmp/server_names.json"
 
 ## STDIO MCP servers
 stdio_servers.calc {

@@ -29,6 +29,9 @@ jobs:
     - name: Check format
       run: make fmt-check
 
+    - name: Dialyzer
+      run: make dialyzer
+
     - name: Run tests
       run: |
         make run

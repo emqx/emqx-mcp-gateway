@@ -31,3 +31,4 @@ erlang_ls.config
 # For direnv
 .envrc
 tmp/
+emqx_dialyzer_*_plt

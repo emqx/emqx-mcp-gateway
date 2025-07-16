@@ -3,6 +3,10 @@
     "zh": "启用 Broker 建议的服务名称",
     "en": "Enable Broker Suggested Server Name"
   },
+  "$load_file": {
+    "zh": "MCP 服务名加载文件",
+    "en": "MCP Server Names Load File"
+  },
   "$server_name": {
     "zh": "服务名称",
     "en": "Server Name"

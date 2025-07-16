@@ -38,6 +38,7 @@
 ]).
 
 -export([
+    on_client_connected/3,
     on_client_connack/3,
     on_message_publish/1,
     on_session_subscribed/3
@@ -117,28 +118,36 @@ terminate(_Reason, _State) ->
 %%==============================================================================
 %% Hooks
 %%==============================================================================
-on_client_connack(ConnInfo = #{mcp_server_name := SuggestedName}, success, ConnAckProps) ->
+on_client_connected(ClientInfo, ConnInfo, _Conf) ->
+    UserPropsConn = maps:get('User-Property', maps:get(conn_props, ConnInfo, #{}), []),
+    ServerId = maps:get(clientid, ClientInfo),
+    case proplists:get_value(?PROP_K_MCP_COMP_TYPE, UserPropsConn) of
+        <<"mcp-server">> ->
+            case get_broker_suggested_server_name(ClientInfo, ConnInfo) of
+                {ok, SuggestedName} ->
+                    Topic = <<"$mcp-server/presence/", ServerId/binary, "/", SuggestedName/binary>>,
+                    erlang:put(mcp_server_presence_topic, Topic),
+                    erlang:put(mcp_broker_suggested_server_name, SuggestedName),
+                    ok;
+                {error, not_found} -> %% no server name configured
+                    ok
+            end;
+        undefined ->
+            ok
+    end.
+
+on_client_connack(ConnInfo, success, ConnAckProps) ->
     UserPropsConn = maps:get('User-Property', maps:get(conn_props, ConnInfo, #{}), []),
     case proplists:get_value(?PROP_K_MCP_COMP_TYPE, UserPropsConn) of
         <<"mcp-server">> ->
-            {ServerId, ServerName} = split_id_and_server_name(ServerIdAndName),
-            case get_broker_suggested_server_name(ConnInfo) of
-                {ok, ServerName} -> %% not changed
+            case erlang:get(mcp_broker_suggested_server_name) of
+                undefined ->
                     {ok, ConnAckProps};
-                {ok, SuggestedName} ->
-                    Topic =
-                        <<"$mcp-server/presence/", ServerId/binary, "/", SuggestedName/binary>>,
-                    erlang:put(mcp_server_presence_topic, Topic),
-                    {ok, add_broker_suggested_server_name(SuggestedName, ConnAckProps)};
-                {error, not_found} -> %% no server name configured
-                    {ok, ConnAckProps}
+                SuggestedName ->
+                    {ok, add_broker_suggested_server_name(SuggestedName, ConnAckProps)}
             end;
-        ComponentType ->
-            ?SLOG(warning, #{
-                msg => mcp_server_component_property_not_set,
-                ?PROP_K_MCP_COMP_TYPE => ComponentType
-            }),
-            {ok, ChannelData}
+        undefined ->
+            {ok, ConnAckProps}
     end;
 on_client_connack(_ConnInfo, _Rc, ConnAckProps) ->
     {ok, ConnAckProps}.
@@ -150,8 +159,8 @@ on_message_publish(#message{topic = <<"$mcp-server/presence", _/binary>>} = Mess
     case erlang:get(mcp_server_presence_topic) of
         undefined ->
             {ok, Message};
-        Topic ->
-            {ok, Message#message{topic = Topic}}
+        PresenceTopic ->
+            {ok, Message#message{topic = PresenceTopic}}
     end;
 on_message_publish(
     #message{
@@ -301,16 +310,19 @@ split_id_and_server_name(Str) ->
         _ -> throw({error, {invalid_id_and_server_name, Str}})
     end.
 
-get_broker_suggested_server_name(ConnInfo) ->
-    emqx_mcp_server_name_manager:get_server_name(ConnInfo).
+get_broker_suggested_server_name(ClientInfo, ConnInfo) ->
+    ConnContext = eventmsg_connected(ClientInfo, ConnInfo),
+    emqx_mcp_server_name_manager:match_server_name_rules(ConnContext).
 
 register_hook() ->
+    hook('client.connected', {?MODULE, on_client_connected, []}),
     hook('client.connack', {?MODULE, on_client_connack, []}),
     hook('message.publish', {?MODULE, on_message_publish, []}),
     hook('session.subscribed', {?MODULE, on_session_subscribed, []}),
     ok.
 
 unregister_hook() ->
+    unhook('client.connected', {?MODULE, on_client_connected}),
     unhook('client.connack', {?MODULE, on_client_connack}),
     unhook('message.publish', {?MODULE, on_message_publish}),
     unhook('session.subscribed', {?MODULE, on_session_subscribed}),
@@ -434,3 +446,61 @@ maybe_call_mcp_server(ServerName, Request) ->
             %% ignore if no server running
             ok
     end.
+
+%% same as emqx_rule_events:eventmsg_connected/2
+eventmsg_connected(
+    ClientInfo = #{
+        clientid := ClientId,
+        username := Username,
+        is_bridge := IsBridge,
+        mountpoint := Mountpoint
+    },
+    ConnInfo = #{
+        peername := PeerName,
+        sockname := SockName,
+        clean_start := CleanStart,
+        proto_name := ProtoName,
+        proto_ver := ProtoVer,
+        connected_at := ConnectedAt
+    }
+) ->
+    Keepalive = maps:get(keepalive, ConnInfo, 0),
+    ConnProps = maps:get(conn_props, ConnInfo, #{}),
+    RcvMax = maps:get(receive_maximum, ConnInfo, 0),
+    ExpiryInterval = maps:get(expiry_interval, ConnInfo, 0),
+    with_basic_columns(
+        'client.connected',
+        #{
+            clientid => ClientId,
+            username => Username,
+            mountpoint => Mountpoint,
+            peername => ntoa(PeerName),
+            sockname => ntoa(SockName),
+            proto_name => ProtoName,
+            proto_ver => ProtoVer,
+            keepalive => Keepalive,
+            clean_start => CleanStart,
+            receive_maximum => RcvMax,
+            expiry_interval => ExpiryInterval div 1000,
+            is_bridge => IsBridge,
+            conn_props => emqx_utils_maps:printable_props(ConnProps),
+            connected_at => ConnectedAt,
+            client_attrs => maps:get(client_attrs, ClientInfo, #{})
+        },
+        #{}
+    ).
+
+with_basic_columns(EventName, Columns, Envs) when is_map(Columns) ->
+    {
+        Columns#{
+            event => EventName,
+            timestamp => erlang:system_time(millisecond),
+            node => node()
+        },
+        Envs
+    }.
+
+ntoa(undefined) ->
+    undefined;
+ntoa(IpOrIpPort) ->
+    iolist_to_binary(emqx_utils:ntoa(IpOrIpPort)).
