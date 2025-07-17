@@ -177,7 +177,7 @@ load_json_file(File) ->
     maybe
         true ?= (core =:= mria_rlog:role()),
         {ok, ServerNamesBin} ?= file:read_file(File),
-        JsonL = emqx_utils_json:decode(ServerNamesBin, [return_maps]),
+        JsonL = emqx_mcp_utils:json_decode(ServerNamesBin),
         ok ?= load_from_json(JsonL),
         ?SLOG(info, #{
             msg => "load_server_name_file_succeeded",

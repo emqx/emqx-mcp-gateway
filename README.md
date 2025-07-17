@@ -17,7 +17,7 @@ Below is a diagram illustrating how an MCP over MQTT client interacts with clien
                                                    │                                      
                                ┌───────────────┐   │                                      
      ┌──────────┐              │               │   │           ┌─────────────────┐        
-     │MCP Client┼──MCP/MQTT────┼    Gateway    ┼───┼─MCP/STDIO─┼ MCP STDIO Server│        
+     │MCP Client┼──MCP-MQTT────┼    Gateway    ┼───┼─MCP/STDIO─┼ MCP STDIO Server│        
      └──────────┘              │               │   │           └─────────────────┘        
                                └───────────────┘   │                                      
                                                    │                                      
@@ -29,7 +29,7 @@ Below is a diagram illustrating how an MCP over MQTT client interacts with clien
 
 ## Configure MCP server names and server name filters
 
-### Configure the Server Name for MCP/MQTT Servers
+### Configure the Server Name for MCP-MQTT Servers
 
 The MCP gateway supports configuring broker suggested `server names` for MCP servers, this it to avoid server name conflicts and maintain a consistent naming convention across different MCP servers.
 
@@ -51,7 +51,7 @@ The `server_name` is a template string that will be rendered as the server sugge
 
 NOTE that by configuring a server name, the MCP gateway will automatically set ACLs to constrain the MCP server to only access the MQTT topics that match the server name.
 
-### Configure the Server Name Filters for MCP/MQTT Clients
+### Configure the Server Name Filters for MCP-MQTT Clients
 
 Similarly, the MCP gateway can also configure `server name filters` for MCP clients, which allows the broker to guide the MCP clients to only connect to specific MCP servers that they are allowed to access.
 

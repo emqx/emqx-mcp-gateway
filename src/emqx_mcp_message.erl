@@ -75,7 +75,7 @@ initialized_notification() ->
 %% JSON RPC Messages
 %%==============================================================================
 json_rpc_request(Id, Method, Params) ->
-    emqx_utils_json:encode(#{
+    emqx_mcp_utils:json_encode(#{
         <<"jsonrpc">> => <<"2.0">>,
         <<"method">> => Method,
         <<"params">> => Params,
@@ -83,27 +83,27 @@ json_rpc_request(Id, Method, Params) ->
     }).
 
 json_rpc_response(Id, Result) ->
-    emqx_utils_json:encode(#{
+    emqx_mcp_utils:json_encode(#{
         <<"jsonrpc">> => <<"2.0">>,
         <<"result">> => Result,
         <<"id">> => Id
     }).
 
 json_rpc_notification(Method) ->
-    emqx_utils_json:encode(#{
+    emqx_mcp_utils:json_encode(#{
         <<"jsonrpc">> => <<"2.0">>,
         <<"method">> => Method
     }).
 
 json_rpc_notification(Method, Params) ->
-    emqx_utils_json:encode(#{
+    emqx_mcp_utils:json_encode(#{
         <<"jsonrpc">> => <<"2.0">>,
         <<"method">> => Method,
         <<"params">> => Params
     }).
 
 json_rpc_error(Id, Code, Message, Data) ->
-    emqx_utils_json:encode(#{
+    emqx_mcp_utils:json_encode(#{
         <<"jsonrpc">> => <<"2.0">>,
         <<"error">> => #{
             <<"code">> => Code,
@@ -114,7 +114,7 @@ json_rpc_error(Id, Code, Message, Data) ->
     }).
 
 decode_rpc_msg(Msg) ->
-    try emqx_utils_json:decode(Msg) of
+    try emqx_mcp_utils:json_decode(Msg) of
         #{
             <<"jsonrpc">> := <<"2.0">>,
             <<"method">> := Method,
