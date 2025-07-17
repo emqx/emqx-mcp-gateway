@@ -52,10 +52,15 @@
 -define(SERVER, ?MODULE).
 -define(TAB_SERVER_NAME, {?MODULE, mcp_server_name}).
 
+-type sql_selector() :: #{
+    fields := term(),
+    where := tuple()
+}.
+
 -type mcp_server_name_rule() :: #{
     id := integer(),
     condition := binary(),
-    selector := tuple(),
+    selector := sql_selector(),
     server_name := binary(),
     server_name_tmpl := binary()
 }.
@@ -68,12 +73,12 @@ start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 -spec load_json_file(binary()) -> {ok, binary()} | {error, term()}.
-match_server_name_rules(ConnContext) ->
+match_server_name_rules(ConnEvent) ->
     case get_server_name_rules() of
         [] ->
             {error, not_found};
         ServerNameRules ->
-            match_server_name_rules(ServerNameRules, ConnContext)
+            match_server_name_rules(ServerNameRules, ConnEvent)
     end.
 
 -spec add_server_name_rule(mcp_server_name_rule()) -> ok.
@@ -90,22 +95,22 @@ delete_server_name_rule(Id) ->
     Rules = get_server_name_rules(),
     persistent_term:put(?TAB_SERVER_NAME, [R || #{id := Id0} = R <- Rules, Id0 =/= Id]).
 
-match_server_name_rules([], _ConnContext) ->
+match_server_name_rules([], _ConnEvent) ->
     {error, not_found};
-match_server_name_rules([Rule | Rest], ConnContext) ->
-    case match_server_name_rule(Rule, ConnContext) of
+match_server_name_rules([Rule | Rest], ConnEvent) ->
+    case match_server_name_rule(Rule, ConnEvent) of
         {ok, ServerName} ->
             {ok, ServerName};
         {error, _} ->
-            match_server_name_rules(Rest, ConnContext)
+            match_server_name_rules(Rest, ConnEvent)
     end.
 
-match_server_name_rule(#{id := Id, selector := Selector, server_name_tmpl := Tmpl}, ConnContext) ->
+match_server_name_rule(#{id := Id, selector := Selector, server_name_tmpl := Tmpl}, ConnEvent) ->
     Fields = maps:get(fields, Selector),
     Where = maps:get(where, Selector, []),
-    try emqx_rule_runtime:evaluate_select(Fields, ConnContext, Where) of
+    try emqx_rule_runtime:evaluate_select(Fields, ConnEvent, Where) of
         {ok, SelectedData} ->
-            {ok, emqx_placeholder:proc_tmpl(Tmpl, SelectedData)};
+            {ok, bbmustache:compile(Tmpl, to_key_map(SelectedData))};
         false ->
             {error, not_match}
     catch
@@ -200,17 +205,17 @@ parse_rule(Id, #{<<"condition">> := SQL, <<"server_name">> := ServerName}) ->
         condition => SQL,
         selector => parse_sql(SQL),
         server_name => ServerName,
-        server_name_tmpl => emqx_placeholder:preproc_tmpl(ServerName)
+        server_name_tmpl => bbmustache:parse_binary(ServerName)
     };
 parse_rule(_, Rule) ->
-    throw({error, {invalid_rule_format, Rule}}).
+    throw(#{reason => invalid_rule_format, rule => Rule}).
 
 parse_sql(SQL) ->
     case emqx_rule_sqlparser:parse(SQL, #{with_from => false}) of
         {ok, Select} ->
             case emqx_rule_sqlparser:select_is_foreach(Select) of
                 true ->
-                    throw({foreach_not_allowed, #{sql => SQL}});
+                    throw(#{reason => foreach_not_allowed, sql => SQL});
                 false ->
                     #{
                         fields => emqx_rule_sqlparser:select_fields(Select),
@@ -218,5 +223,19 @@ parse_sql(SQL) ->
                     }
             end;
         {error, Reason} ->
-            throw({invalid_sql, #{sql => SQL, reason => Reason}})
+            throw(#{reason => invalid_sql, sql => SQL, details => Reason})
     end.
+
+to_key_map(SelectedData) when is_map(SelectedData) ->
+    maps:fold(fun(K, V, Acc) ->
+        Acc#{ensure_list(K) => V}
+    end, #{}, SelectedData).
+
+ensure_list(Key) when is_atom(Key) ->
+    atom_to_list(Key);
+ensure_list(Key) when is_binary(Key) ->
+    binary_to_list(Key);
+ensure_list(Key) when is_list(Key) ->
+    Key;
+ensure_list(Key) ->
+    throw(#{reason => invalid_key_type, key => Key}).
