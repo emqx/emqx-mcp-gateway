@@ -65,7 +65,6 @@
     server_name_tmpl := binary()
 }.
 
-
 %%--------------------------------------------------------------------
 %% API
 %%--------------------------------------------------------------------
@@ -227,9 +226,13 @@ parse_sql(SQL) ->
     end.
 
 to_key_map(SelectedData) when is_map(SelectedData) ->
-    maps:fold(fun(K, V, Acc) ->
-        Acc#{ensure_list(K) => V}
-    end, #{}, SelectedData).
+    maps:fold(
+        fun(K, V, Acc) ->
+            Acc#{ensure_list(K) => V}
+        end,
+        #{},
+        SelectedData
+    ).
 
 ensure_list(Key) when is_atom(Key) ->
     atom_to_list(Key);

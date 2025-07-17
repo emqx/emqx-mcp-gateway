@@ -129,7 +129,8 @@ on_client_connected(ClientInfo, ConnInfo) ->
                     erlang:put(mcp_server_presence_topic, Topic),
                     erlang:put(mcp_broker_suggested_server_name, SuggestedName),
                     ok;
-                {error, not_found} -> %% no server name configured
+                %% no server name configured
+                {error, not_found} ->
                     ok
             end;
         undefined ->
