@@ -55,6 +55,7 @@
 
 -define(PROP_K_MCP_COMP_TYPE, <<"MCP-COMPONENT-TYPE">>).
 -define(PROP_K_MCP_SERVER_NAME, <<"MCP-SERVER-NAME">>).
+-define(PROP_K_MCP_SERVER_NAME_FILETERS, <<"MCP-SERVER-NAME-FILTERS">>).
 
 %%==============================================================================
 %% APIs
@@ -133,6 +134,14 @@ on_client_connected(ClientInfo, ConnInfo) ->
                 {error, not_found} ->
                     ok
             end;
+        <<"mcp-client">> ->
+            case get_broker_suggested_server_name_filters(ClientInfo, ConnInfo) of
+                {ok, ServerNameFilters} ->
+                    erlang:put(mcp_broker_suggested_server_name_filters, ServerNameFilters),
+                    ok;
+                {error, not_found} ->
+                    ok
+            end;
         undefined ->
             ok
     end.
@@ -146,6 +155,13 @@ on_client_connack(ConnInfo, success, ConnAckProps) ->
                     {ok, ConnAckProps};
                 SuggestedName ->
                     {ok, add_broker_suggested_server_name(SuggestedName, ConnAckProps)}
+            end;
+        <<"mcp-client">> ->
+            case erlang:get(mcp_broker_suggested_server_name_filters) of
+                undefined ->
+                    {ok, ConnAckProps};
+                ServerNameFilters ->
+                    {ok, add_broker_suggested_server_name_filters(ServerNameFilters, ConnAckProps)}
             end;
         undefined ->
             {ok, ConnAckProps}
@@ -304,6 +320,12 @@ add_broker_suggested_server_name(SuggestedName, ConnAckProps) ->
     UserPropsConnAck1 = [{?PROP_K_MCP_SERVER_NAME, SuggestedName} | UserPropsConnAck],
     ConnAckProps#{'User-Property' => UserPropsConnAck1}.
 
+add_broker_suggested_server_name_filters(ServerNameFilters, ConnAckProps) ->
+    ServerNameFilters1 = iolist_to_binary(emqx_mcp_utils:json_encode(ServerNameFilters)),
+    UserPropsConnAck = maps:get('User-Property', ConnAckProps, []),
+    UserPropsConnAck1 = [{?PROP_K_MCP_SERVER_NAME_FILETERS, ServerNameFilters1} | UserPropsConnAck],
+    ConnAckProps#{'User-Property' => UserPropsConnAck1}.
+
 split_id_and_server_name(Str) ->
     %% Split the server ID and name from the topic
     case string:split(Str, <<"/">>) of
@@ -314,6 +336,10 @@ split_id_and_server_name(Str) ->
 get_broker_suggested_server_name(ClientInfo, ConnInfo) ->
     ConnEvent = eventmsg_connected(ClientInfo, ConnInfo),
     emqx_mcp_server_name_manager:match_server_name_rules(ConnEvent).
+
+get_broker_suggested_server_name_filters(ClientInfo, ConnInfo) ->
+    ConnEvent = eventmsg_connected(ClientInfo, ConnInfo),
+    emqx_mcp_server_name_manager:match_server_name_filter_rules(ConnEvent).
 
 register_hook() ->
     hook('client.connected', {?MODULE, on_client_connected, []}),
