@@ -28,12 +28,23 @@
               "required": false,
               "label": "$load_file_s"
             }
+          },
+          {
+            "name": "deny_if_no_match",
+            "type": "boolean",
+            "default": true,
+            "$ui": {
+              "component": "switch",
+              "flex": 12,
+              "required": false,
+              "label": "$deny_if_no_match"
+            }
           }
         ]
       }
     },
     {
-      "name": "broker_suggested_server_name_filters_for_clients",
+      "name": "broker_suggested_server_name_filters",
       "type": {
         "type": "record",
         "name": "BrokerSuggServerNameFiltersConfig",
@@ -57,6 +68,17 @@
               "flex": 24,
               "required": false,
               "label": "$load_file_c"
+            }
+          },
+          {
+            "name": "deny_if_no_match",
+            "type": "boolean",
+            "default": true,
+            "$ui": {
+              "component": "switch",
+              "flex": 12,
+              "required": false,
+              "label": "$deny_if_no_match"
             }
           }
         ]

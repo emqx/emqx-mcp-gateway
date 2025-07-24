@@ -100,10 +100,11 @@ handle_call({stop_servers, ServerName}, _From, State) ->
     {reply, ok, State#{
         listening_mcp_servers => maps:remove(ServerName, McpServers)
     }};
-handle_call({initialize, _, _, _}, _From, State) ->
-    {reply, {error, no_server_name_available}, State};
-handle_call(_Request, _From, State) ->
-    {reply, ok, State}.
+handle_call({initialize, _, _, _, _, _}, _From, State) ->
+    {reply, {error, no_server_available}, State};
+handle_call(Request, _From, State) ->
+    ?SLOG(error, #{msg => unexpected_call, message => Request}),
+    {reply, {error, invalid_request}, State}.
 
 handle_cast({start_listening_servers, #{server_name := ServerName} = Conf}, State) ->
     McpServers = maps:get(listening_mcp_servers, State, #{}),

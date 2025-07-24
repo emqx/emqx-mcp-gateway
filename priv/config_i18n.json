@@ -30,6 +30,10 @@
   "$env": {
     "zh": "环境变量",
     "en": "Environment Variables"
+  },
+  "$deny_if_no_match": {
+    "zh": "如果没有匹配则拒绝",
+    "en": "Deny if No Match"
   }
 }
 

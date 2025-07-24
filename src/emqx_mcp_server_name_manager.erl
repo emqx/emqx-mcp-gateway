@@ -105,6 +105,7 @@ add_server_name_rule(Rule) ->
 get_server_name_rules() ->
     persistent_term:get(?TAB_SERVER_NAME, []).
 
+-spec put_server_name_rules([mcp_server_name_rule()]) -> ok.
 put_server_name_rules(Rules) ->
     persistent_term:put(?TAB_SERVER_NAME, Rules).
 
@@ -127,6 +128,7 @@ match_server_name_filter_rules(ConnEvent) ->
 get_server_name_filter_rules() ->
     persistent_term:get(?TAB_SERVER_NAME_FILTER, []).
 
+-spec put_server_name_filter_rules([mcp_server_name_filter_rule()]) -> ok.
 put_server_name_filter_rules(Rules) ->
     persistent_term:put(?TAB_SERVER_NAME_FILTER, Rules).
 
@@ -189,7 +191,7 @@ load_server_names() ->
 
 load_server_name_filters() ->
     case
-        maps:get(<<"broker_suggested_server_name_filters_for_clients">>, emqx_mcp_gateway:get_config(), #{
+        maps:get(<<"broker_suggested_server_name_filters">>, emqx_mcp_gateway:get_config(), #{
             <<"enable">> => true
         })
     of

@@ -38,6 +38,7 @@
 ]).
 
 -export([
+    authorize/4,
     on_client_connected/2,
     on_client_connack/3,
     on_message_publish/1,
@@ -51,6 +52,11 @@
     handle_cast/2,
     handle_info/2,
     terminate/2
+]).
+
+-export([
+    check_mcp_pub_acl/4,
+    check_mcp_sub_acl/4
 ]).
 
 -define(PROP_K_MCP_COMP_TYPE, <<"MCP-COMPONENT-TYPE">>).
@@ -124,6 +130,7 @@ on_client_connected(ClientInfo, ConnInfo) ->
     ServerId = maps:get(clientid, ClientInfo),
     case proplists:get_value(?PROP_K_MCP_COMP_TYPE, UserPropsConn) of
         <<"mcp-server">> ->
+            erlang:put(mcp_component_type, mcp_server),
             case get_broker_suggested_server_name(ClientInfo, ConnInfo) of
                 {ok, SuggestedName} ->
                     Topic = <<"$mcp-server/presence/", ServerId/binary, "/", SuggestedName/binary>>,
@@ -135,6 +142,7 @@ on_client_connected(ClientInfo, ConnInfo) ->
                     ok
             end;
         <<"mcp-client">> ->
+            erlang:put(mcp_component_type, mcp_client),
             case get_broker_suggested_server_name_filters(ClientInfo, ConnInfo) of
                 {ok, ServerNameFilters} ->
                     erlang:put(mcp_broker_suggested_server_name_filters, ServerNameFilters),
@@ -169,9 +177,19 @@ on_client_connack(ConnInfo, success, ConnAckProps) ->
 on_client_connack(_ConnInfo, _Rc, ConnAckProps) ->
     {ok, ConnAckProps}.
 
-on_message_publish(#message{topic = <<"$mcp-server/capability", _/binary>>} = Message) ->
-    %% ignore capability notifications sent by mcp server
-    {ok, Message};
+authorize(#{clientid := ClientId}, #{action_type := publish}, <<"$mcp-", _/binary>> = Topic, _) ->
+    Result = check_mcp_pub_acl(Topic, ClientId),
+    ?SLOG(debug, #{msg => authorize_mcp_publish, clientid => ClientId, topic => Topic, result => Result}),
+    {stop, #{result => Result}};
+authorize(#{clientid := ClientId}, #{action_type := subscribe}, <<"$mcp-", _/binary>> = Topic, _) ->
+    Result = check_mcp_sub_acl(Topic, ClientId),
+    ?SLOG(debug, #{msg => authorize_mcp_subscribe, clientid => ClientId, topic => Topic, result => Result}),
+    {stop, #{result => Result}};
+authorize(_ClientInfo, _ActionType, _Topic, _) ->
+    %% Ignore if not a MCP topic
+    ?SLOG(debug, #{msg => ignore_not_mcp_topic}),
+    ignore.
+
 on_message_publish(#message{topic = <<"$mcp-server/presence", _/binary>>} = Message) ->
     case erlang:get(mcp_server_presence_topic) of
         undefined ->
@@ -260,11 +278,11 @@ on_message_publish(
 on_message_publish(
     #message{
         from = McpClientId,
-        topic = <<"$mcp-rpc/", ClientIdAndServerName/binary>>,
+        topic = <<"$mcp-rpc/", ClientIdServerIdName/binary>>,
         payload = RpcMsg
     } = Message
 ) ->
-    {_, ServerName} = split_id_and_server_name(ClientIdAndServerName),
+    {_, _, ServerName} = split_clientid_server_id_name(ClientIdServerIdName),
     case maybe_call_mcp_server(ServerName, {rpc, RpcMsg}) of
         {error, Reason} ->
             case emqx_mcp_message:decode_rpc_msg(RpcMsg) of
@@ -315,6 +333,32 @@ on_session_subscribed(_, _Topic, _SubOpts) ->
     %% Ignore other topics
     ok.
 
+register_hook() ->
+    hook('client.connected', {?MODULE, on_client_connected, []}, ?HP_LOWEST),
+    hook('client.connack', {?MODULE, on_client_connack, []}, ?HP_LOWEST),
+    hook('message.publish', {?MODULE, on_message_publish, []}, ?HP_HIGHEST + 1),
+    %% Set priority higher than authz to handle MCP topics before authz
+    hook('client.authorize', {?MODULE, authorize, []}, ?HP_AUTHZ + 1),
+    hook('session.subscribed', {?MODULE, on_session_subscribed, []}, ?HP_LOWEST),
+    ok.
+
+unregister_hook() ->
+    unhook('client.connected', {?MODULE, on_client_connected}),
+    unhook('client.connack', {?MODULE, on_client_connack}),
+    unhook('message.publish', {?MODULE, on_message_publish}),
+    unhook('client.authorize', {?MODULE, authorize}),
+    unhook('session.subscribed', {?MODULE, on_session_subscribed}),
+    ok.
+
+hook(HookPoint, MFA, Priority) ->
+    ok = emqx_hooks:put(HookPoint, MFA, Priority).
+
+unhook(HookPoint, MFA) ->
+    ok = emqx_hooks:del(HookPoint, MFA).
+
+%%==============================================================================
+%% Internal functions
+%%==============================================================================
 add_broker_suggested_server_name(SuggestedName, ConnAckProps) ->
     UserPropsConnAck = maps:get('User-Property', ConnAckProps, []),
     UserPropsConnAck1 = [{?PROP_K_MCP_SERVER_NAME, SuggestedName} | UserPropsConnAck],
@@ -326,11 +370,150 @@ add_broker_suggested_server_name_filters(ServerNameFilters, ConnAckProps) ->
     UserPropsConnAck1 = [{?PROP_K_MCP_SERVER_NAME_FILETERS, ServerNameFilters1} | UserPropsConnAck],
     ConnAckProps#{'User-Property' => UserPropsConnAck1}.
 
+check_mcp_pub_acl(Topic, ClientId) ->
+    ComponentType = erlang:get(mcp_component_type),
+    case ComponentType of
+        mcp_server ->
+            ServerName = erlang:get(mcp_broker_suggested_server_name),
+            check_mcp_pub_acl(ComponentType, Topic, ClientId, ServerName);
+        mcp_client ->
+            ServerNameFilters = erlang:get(mcp_broker_suggested_server_name_filters),
+            check_mcp_pub_acl(ComponentType, Topic, ClientId, ServerNameFilters);
+        undefined ->
+            deny
+    end.
+
+check_mcp_sub_acl(Topic, ClientId) ->
+    ComponentType = erlang:get(mcp_component_type),
+    case ComponentType of
+        mcp_server ->
+            ServerName = erlang:get(mcp_broker_suggested_server_name),
+            check_mcp_sub_acl(ComponentType, Topic, ClientId, ServerName);
+        mcp_client ->
+            ServerNameFilters = erlang:get(mcp_broker_suggested_server_name_filters),
+            check_mcp_sub_acl(ComponentType, Topic, ClientId, ServerNameFilters);
+        undefined ->
+            deny
+    end.
+
+check_mcp_pub_acl(mcp_server, _Topic, _, undefined) ->
+    deny_if_no_match(<<"broker_suggested_server_name">>);
+check_mcp_pub_acl(mcp_server, <<"$mcp-server/capability/", ServerIdAndName/binary>>, ServerId, ServerName) ->
+    case split_id_and_server_name(ServerIdAndName) of
+        {ServerId, ServerName} -> allow;
+        _ -> deny
+    end;
+check_mcp_pub_acl(mcp_server, <<"$mcp-server/presence/", ServerIdAndName/binary>>, ServerId, ServerName) ->
+    case split_id_and_server_name(ServerIdAndName) of
+        {ServerId, ServerName} -> allow;
+        _ -> deny
+    end;
+check_mcp_pub_acl(mcp_server, <<"$mcp-rpc/", ClientIdServerIdName/binary>>, ServerId, ServerName) ->
+    case split_clientid_server_id_name(ClientIdServerIdName) of
+        {_, ServerId, ServerName} -> allow;
+        _ -> deny
+    end;
+check_mcp_pub_acl(mcp_client, _Topic, _, undefined) ->
+    deny_if_no_match(<<"broker_suggested_server_name_filters">>);
+check_mcp_pub_acl(mcp_client, <<"$mcp-server/", ServerIdAndName/binary>>, _, ServerNameFilters) ->
+    case split_id_and_server_name(ServerIdAndName) of
+        {_, ServerName} ->
+            case emqx_mcp_utils:can_topic_match_oneof(ServerName, ServerNameFilters) of
+                true -> allow;
+                false -> deny
+            end;
+        _ -> deny
+    end;
+check_mcp_pub_acl(mcp_client, <<"$mcp-client/capability/", McpClientId/binary>>, McpClientId, _) ->
+    allow;
+check_mcp_pub_acl(mcp_client, <<"$mcp-client/presence/", McpClientId/binary>>, McpClientId, _) ->
+    allow;
+check_mcp_pub_acl(mcp_client, <<"$mcp-rpc/", ClientIdServerIdName/binary>>, McpClientId, ServerNameFilters) ->
+    case split_clientid_server_id_name(ClientIdServerIdName) of
+        {McpClientId, _, ServerName} ->
+            case emqx_mcp_utils:can_topic_match_oneof(ServerName, ServerNameFilters) of
+                true -> allow;
+                false -> deny
+            end;
+        _ -> deny
+    end;
+check_mcp_pub_acl(_ComponentType, _Topic, _, _ServerNameOrFilters) ->
+    deny.
+
+check_mcp_sub_acl(mcp_server, _Topic, _, undefined) ->
+    deny_if_no_match(<<"broker_suggested_server_name">>);
+check_mcp_sub_acl(mcp_server, <<"$mcp-server/", ServerIdAndName/binary>>, ServerId, ServerName) ->
+    case split_id_and_server_name(ServerIdAndName) of
+        {ServerId, ServerName} -> allow;
+        _ -> deny
+    end;
+check_mcp_sub_acl(mcp_server, <<"$mcp-client/capability", _/binary>>, _, _) ->
+    allow;
+check_mcp_sub_acl(mcp_server, <<"$mcp-client/presence", _/binary>>, _, _) ->
+    allow;
+check_mcp_sub_acl(mcp_server, <<"$mcp-rpc/", ClientIdServerIdName/binary>>, ServerId, ServerName) ->
+    case split_clientid_server_id_name(ClientIdServerIdName) of
+        {_, ServerId, ServerName} -> allow;
+        _ -> deny
+    end;
+check_mcp_sub_acl(mcp_client, _Topic, _, undefined) ->
+    deny_if_no_match(<<"broker_suggested_server_name_filters">>);
+check_mcp_sub_acl(mcp_client, <<"$mcp-server/capability/", ServerIdAndName/binary>>, _, ServerNameFilters) ->
+    case split_id_and_server_name(ServerIdAndName) of
+        {_, ServerName} ->
+            case emqx_mcp_utils:can_topic_match_oneof(ServerName, ServerNameFilters) of
+                true -> allow;
+                false -> deny
+            end;
+        _ -> deny
+    end;
+check_mcp_sub_acl(mcp_client, <<"$mcp-server/presence/", ServerIdAndName/binary>>, _, ServerNameFilters) ->
+    case split_id_and_server_name(ServerIdAndName) of
+        {_, ServerName} ->
+            case emqx_mcp_utils:can_topic_match_oneof(ServerName, ServerNameFilters) of
+                true -> allow;
+                false -> deny
+            end;
+        _ -> deny
+    end;
+check_mcp_sub_acl(mcp_client, <<"$mcp-rpc/", ClientIdServerIdName/binary>>, McpClientId, ServerNameFilters) ->
+    case split_clientid_server_id_name(ClientIdServerIdName) of
+        {McpClientId, _, ServerName} ->
+            case emqx_mcp_utils:can_topic_match_oneof(ServerName, ServerNameFilters) of
+                true -> allow;
+                false -> deny
+            end;
+        _ -> deny
+    end;
+check_mcp_sub_acl(_ComponentType, _Topic, _, _ServerNameOrFilters) ->
+    deny.
+
+deny_if_no_match(ConfKey) ->
+    Default = #{
+        <<"enable">> => true,
+        <<"deny_if_no_match">> => true
+    },
+    case maps:get(ConfKey, emqx_mcp_gateway:get_config(), Default) of
+        #{<<"enable">> := true, <<"deny_if_no_match">> := true} ->
+            deny;
+        _ ->
+            allow
+    end.
+
 split_id_and_server_name(Str) ->
-    %% Split the server ID and name from the topic
+    %% Split the server_id and server_name from the topic
     case string:split(Str, <<"/">>) of
-        [Id, ServerName] -> {Id, ServerName};
+        [ServerId, ServerName] -> {ServerId, ServerName};
         _ -> throw({error, {invalid_id_and_server_name, Str}})
+    end.
+
+split_clientid_server_id_name(Str) ->
+    %% Split the clientid, server_id, and server_name from the topic
+    case string:split(Str, <<"/">>) of
+        [McpClientId, ServerIdAndName] ->
+            {ServerId, ServerName} = split_id_and_server_name(ServerIdAndName),
+            {McpClientId, ServerId, ServerName};
+        _ -> throw({error, {invalid_clientid_server_id_name, Str}})
     end.
 
 get_broker_suggested_server_name(ClientInfo, ConnInfo) ->
@@ -341,32 +524,6 @@ get_broker_suggested_server_name_filters(ClientInfo, ConnInfo) ->
     ConnEvent = eventmsg_connected(ClientInfo, ConnInfo),
     emqx_mcp_server_name_manager:match_server_name_filter_rules(ConnEvent).
 
-register_hook() ->
-    hook('client.connected', {?MODULE, on_client_connected, []}),
-    hook('client.connack', {?MODULE, on_client_connack, []}),
-    hook('message.publish', {?MODULE, on_message_publish, []}),
-    hook('session.subscribed', {?MODULE, on_session_subscribed, []}),
-    ok.
-
-unregister_hook() ->
-    unhook('client.connected', {?MODULE, on_client_connected}),
-    unhook('client.connack', {?MODULE, on_client_connack}),
-    unhook('message.publish', {?MODULE, on_message_publish}),
-    unhook('session.subscribed', {?MODULE, on_session_subscribed}),
-    ok.
-
-hook(HookPoint, MFA) ->
-    %% Higher priority than retainer, make it possible to handle mcp service discovery
-    %% messages in this module rather than in emqx_retainer.
-    Priority = ?HP_RETAINER + 1,
-    ok = emqx_hooks:put(HookPoint, MFA, Priority).
-
-unhook(HookPoint, MFA) ->
-    ok = emqx_hooks:del(HookPoint, MFA).
-
-%%==============================================================================
-%% Internal functions
-%%==============================================================================
 foreach_configured_mcp_server(Fun) ->
     Config = get_config(),
     lists:foreach(
