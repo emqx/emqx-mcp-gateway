@@ -62,6 +62,7 @@
 -define(PROP_K_MCP_COMP_TYPE, <<"MCP-COMPONENT-TYPE">>).
 -define(PROP_K_MCP_SERVER_NAME, <<"MCP-SERVER-NAME">>).
 -define(PROP_K_MCP_SERVER_NAME_FILETERS, <<"MCP-SERVER-NAME-FILTERS">>).
+-define(PROP_K_MCP_CLIENT_RBAC, <<"MCP-RBAC">>).
 
 %%==============================================================================
 %% APIs
@@ -149,6 +150,14 @@ on_client_connected(ClientInfo, ConnInfo) ->
                     ok;
                 {error, not_found} ->
                     ok
+            end,
+            case get_mcp_client_rbac_rules(ClientInfo, ConnInfo) of
+                {ok, RbacInfo} ->
+                    erlang:put(mcp_client_rbac_rules, RbacInfo),
+                    ok;
+                {error, not_found} ->
+                    %% no rules configured
+                    ok
             end;
         undefined ->
             ok
@@ -165,11 +174,17 @@ on_client_connack(ConnInfo, success, ConnAckProps) ->
                     {ok, add_broker_suggested_server_name(SuggestedName, ConnAckProps)}
             end;
         <<"mcp-client">> ->
-            case erlang:get(mcp_broker_suggested_server_name_filters) of
+            ConnAckProps1 = case erlang:get(mcp_broker_suggested_server_name_filters) of
                 undefined ->
-                    {ok, ConnAckProps};
+                    ConnAckProps;
                 ServerNameFilters ->
-                    {ok, add_broker_suggested_server_name_filters(ServerNameFilters, ConnAckProps)}
+                    add_broker_suggested_server_name_filters(ServerNameFilters, ConnAckProps)
+            end,
+            case erlang:get(mcp_client_rbac_rules) of
+                undefined ->
+                    {ok, ConnAckProps1};
+                RbacInfo ->
+                    {ok, add_mcp_client_rbac_info(RbacInfo, ConnAckProps1)}
             end;
         undefined ->
             {ok, ConnAckProps}
@@ -365,9 +380,15 @@ add_broker_suggested_server_name(SuggestedName, ConnAckProps) ->
     ConnAckProps#{'User-Property' => UserPropsConnAck1}.
 
 add_broker_suggested_server_name_filters(ServerNameFilters, ConnAckProps) ->
-    ServerNameFilters1 = iolist_to_binary(emqx_mcp_utils:json_encode(ServerNameFilters)),
+    ServerNameFltJson = iolist_to_binary(emqx_mcp_utils:json_encode(ServerNameFilters)),
     UserPropsConnAck = maps:get('User-Property', ConnAckProps, []),
-    UserPropsConnAck1 = [{?PROP_K_MCP_SERVER_NAME_FILETERS, ServerNameFilters1} | UserPropsConnAck],
+    UserPropsConnAck1 = [{?PROP_K_MCP_SERVER_NAME_FILETERS, ServerNameFltJson} | UserPropsConnAck],
+    ConnAckProps#{'User-Property' => UserPropsConnAck1}.
+
+add_mcp_client_rbac_info(RbacInfo, ConnAckProps) ->
+    UserPropsConnAck = maps:get('User-Property', ConnAckProps, []),
+    RbacInfoJson = iolist_to_binary(emqx_mcp_utils:json_encode(RbacInfo)),
+    UserPropsConnAck1 = [{?PROP_K_MCP_CLIENT_RBAC, RbacInfoJson} | UserPropsConnAck],
     ConnAckProps#{'User-Property' => UserPropsConnAck1}.
 
 check_mcp_pub_acl(Topic, ClientId) ->
@@ -523,6 +544,10 @@ get_broker_suggested_server_name(ClientInfo, ConnInfo) ->
 get_broker_suggested_server_name_filters(ClientInfo, ConnInfo) ->
     ConnEvent = eventmsg_connected(ClientInfo, ConnInfo),
     emqx_mcp_server_name_manager:match_server_name_filter_rules(ConnEvent).
+
+get_mcp_client_rbac_rules(ClientInfo, ConnInfo) ->
+    ConnEvent = eventmsg_connected(ClientInfo, ConnInfo),
+    emqx_mcp_server_name_manager:match_mcp_client_rbac_rules(ConnEvent).
 
 foreach_configured_mcp_server(Fun) ->
     Config = get_config(),

@@ -85,6 +85,36 @@
       }
     },
     {
+      "name": "mcp_client_rbac",
+      "type": {
+        "type": "record",
+        "name": "MCPClientsRBACConfig",
+        "fields": [
+          {
+            "name": "enable",
+            "type": "boolean",
+            "default": true,
+            "$ui": {
+              "component": "switch",
+              "flex": 12,
+              "required": false,
+              "label": "$enable_mcp_client_rbac"
+            }
+          },
+          {
+            "name": "load_file",
+            "type": "string",
+            "$ui": {
+              "component": "input",
+              "flex": 24,
+              "required": false,
+              "label": "$load_file_client_rbac"
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "stdio_servers",
       "type": {
         "type": "map",

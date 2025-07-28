@@ -43,6 +43,14 @@
     delete_server_name_filter_rule/1
 ]).
 
+-export([
+    match_mcp_client_rbac_rules/1,
+    add_mcp_client_rbac_rule/1,
+    get_mcp_client_rbac_rules/0,
+    put_mcp_client_rbac_rules/1,
+    delete_mcp_client_rbac_rule/1
+]).
+
 %% gen_server callbacks
 -export([
     init/1,
@@ -58,6 +66,7 @@
 -define(SERVER, ?MODULE).
 -define(TAB_SERVER_NAME, {?MODULE, mcp_server_name}).
 -define(TAB_SERVER_NAME_FILTER, {?MODULE, mcp_server_name_filter}).
+-define(TAB_MCP_CLIENT_RBAC, {?MODULE, mcp_client_rbac}).
 
 -type sql_selector() :: #{
     fields := term(),
@@ -78,6 +87,22 @@
     selector := sql_selector(),
     server_name_filters := [binary()],
     server_name_filters_tmpl := [binary()]
+}.
+
+-type mcp_client_rbac_rule() :: #{
+    id := integer(),
+    condition := binary(),
+    selector := sql_selector(),
+    rbac := [#{
+        server_name := binary(),
+        server_name_tmpl := binary(),
+        role_name := binary()
+    }]
+}.
+
+-type mcp_client_rbac_info() :: #{
+    server_name := binary(),
+    role_name := binary()
 }.
 
 %%--------------------------------------------------------------------
@@ -141,6 +166,32 @@ add_server_name_filter_rules(Rule) ->
     put_server_name_filter_rules([Rule | get_server_name_filter_rules()]).
 
 %%--------------------------------------------------------------------
+%% MCP client RBAC
+%%--------------------------------------------------------------------
+-spec match_mcp_client_rbac_rules(binary()) -> {ok, [mcp_client_rbac_info()]} | {error, term()}.
+match_mcp_client_rbac_rules(ConnEvent) ->
+    case get_mcp_client_rbac_rules() of
+        [] -> {error, not_found};
+        ClientRbacRules ->
+            match_mcp_client_rbac_rules(ClientRbacRules, ConnEvent)
+    end.
+
+get_mcp_client_rbac_rules() ->
+    persistent_term:get(?TAB_MCP_CLIENT_RBAC, []).
+
+-spec put_mcp_client_rbac_rules([mcp_client_rbac_rule()]) -> ok.
+put_mcp_client_rbac_rules(Rules) ->
+    persistent_term:put(?TAB_MCP_CLIENT_RBAC, Rules).
+
+delete_mcp_client_rbac_rule(Id) ->
+    Rules = get_mcp_client_rbac_rules(),
+    persistent_term:put(?TAB_MCP_CLIENT_RBAC, [R || #{id := Id0} = R <- Rules, Id0 =/= Id]).
+
+-spec add_mcp_client_rbac_rule(mcp_client_rbac_rule()) -> ok.
+add_mcp_client_rbac_rule(Rule) ->
+    put_mcp_client_rbac_rules([Rule | get_mcp_client_rbac_rules()]).
+
+%%--------------------------------------------------------------------
 %% Gen Server Callbacks
 %%--------------------------------------------------------------------
 init([]) ->
@@ -150,6 +201,7 @@ handle_continue(load_server_names, State) ->
     maybe
         ok ?= load_server_names(),
         ok ?= load_server_name_filters(),
+        ok ?= load_mcp_client_rbac(),
         ?SLOG(info, #{msg => load_server_names_succeeded})
     else
         {error, Reason} ->
@@ -199,6 +251,20 @@ load_server_name_filters() ->
             ok;
         #{<<"enable">> := true, <<"load_file">> := File} when is_binary(File) ->
             load_json_file(File, fun parse_server_name_filter_rule/2, fun put_server_name_filter_rules/1);
+        _ ->
+            ok
+    end.
+
+load_mcp_client_rbac() ->
+    case
+        maps:get(<<"mcp_client_rbac">>, emqx_mcp_gateway:get_config(), #{
+            <<"enable">> => true
+        })
+    of
+        #{<<"enable">> := false} ->
+            ok;
+        #{<<"enable">> := true, <<"load_file">> := File} when is_binary(File) ->
+            load_json_file(File, fun parse_mcp_client_rbac_rule/2, fun put_mcp_client_rbac_rules/1);
         _ ->
             ok
     end.
@@ -254,6 +320,26 @@ parse_server_name_filter_rule(Id, #{<<"condition">> := SQL, <<"server_name_filte
 parse_server_name_filter_rule(_, Rule) ->
     throw(#{reason => invalid_rule_format, rule => Rule}).
 
+-spec parse_mcp_client_rbac_rule(integer(), map()) -> mcp_client_rbac_rule().
+parse_mcp_client_rbac_rule(Id, #{<<"condition">> := SQL, <<"rbac">> := Rbac}) ->
+    %% assert that 'rbac' is an array
+    true = is_list(Rbac),
+    #{
+        id => Id,
+        condition => SQL,
+        selector => parse_sql(SQL),
+        rbac => [
+            #{
+                server_name => ServerName,
+                server_name_tmpl => bbmustache:parse_binary(ServerName),
+                role_name => RoleName
+            }
+            || #{<<"server_name">> := ServerName, <<"role_name">> := RoleName} <- Rbac
+        ]
+    };
+parse_mcp_client_rbac_rule(_, Rule) ->
+    throw(#{reason => invalid_rule_format, rule => Rule}).
+
 parse_sql(SQL) ->
     case emqx_rule_sqlparser:parse(SQL, #{with_from => false}) of
         {ok, Select} ->
@@ -271,10 +357,30 @@ parse_sql(SQL) ->
     end.
 
 match_server_name_rules(Rules, ConnEvent) ->
-    match_server_name_rules(Rules, ConnEvent, server_name_tmpl).
+    RenderFun = fun(Rule, SelectedData) ->
+        Tmpl = maps:get(server_name_tmpl, Rule),
+        bbmustache:compile(Tmpl, SelectedData)
+    end,
+    match_server_name_rules(Rules, ConnEvent, RenderFun).
 
 match_server_name_filter_rules(Rules, ConnEvent) ->
-    match_server_name_rules(Rules, ConnEvent, server_name_filters_tmpl).
+    RenderFun = fun(Rule, SelectedData) ->
+        [
+            bbmustache:compile(Tmpl, SelectedData)
+            || Tmpl <- maps:get(server_name_filters_tmpl, Rule)
+        ]
+    end,
+    match_server_name_rules(Rules, ConnEvent, RenderFun).
+
+match_mcp_client_rbac_rules(Rules, ConnEvent) ->
+    RenderFun = fun(Rule, SelectedData) ->
+        Rbac = maps:get(rbac, Rule),
+        [
+            #{server_name => bbmustache:compile(Tmpl, SelectedData), role_name => Role}
+            || #{server_name_tmpl := Tmpl, role_name := Role} <- Rbac
+        ]
+    end,
+    match_server_name_rules(Rules, ConnEvent, RenderFun).
 
 match_server_name_rules([], _ConnEvent, _) ->
     {error, not_found};
@@ -286,21 +392,12 @@ match_server_name_rules([Rule | Rest], ConnEvent, TmpKey) ->
             match_server_name_rules(Rest, ConnEvent, TmpKey)
     end.
 
-do_match_server_name_rule(#{id := Id, selector := Selector} = Rule, ConnEvent, TmpKey) ->
+do_match_server_name_rule(#{id := Id, selector := Selector} = Rule, ConnEvent, RenderFun) ->
     Fields = maps:get(fields, Selector),
     Where = maps:get(where, Selector, []),
     try emqx_rule_runtime:evaluate_select(Fields, ConnEvent, Where) of
         {ok, SelectedData} ->
-            Rendered =
-                case maps:get(TmpKey, Rule) of
-                    Tmpls when is_list(Tmpls) ->
-                        [
-                            bbmustache:compile(Tmpl, to_key_map(SelectedData))
-                            || Tmpl <- Tmpls
-                        ];
-                    Tmpl ->
-                        bbmustache:compile(Tmpl, to_key_map(SelectedData))
-                end,
+            Rendered = RenderFun(Rule, to_key_map(SelectedData)),
             {ok, Rendered};
         false ->
             {error, not_match}

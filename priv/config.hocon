@@ -1,13 +1,13 @@
 ## Broker suggested server name.
 ## When the MCP over MQTT server connects to the Broker, the Broker can include a suggested server name in the CONNACK packet using the MCP-SERVER-NAME user property. This allows the MCP server to replace its original server name with the suggested server name.
 ## This feature can be used to maintain a unified server name structure across the entire system, avoiding issues such as naming conflicts or non-standard naming caused by the MCP server's own server name.
-broker_suggested_server_name.enable = true
+broker_suggested_server_name.enable = false
 
 ## The CSV file from which the plugin can load server names from.
 broker_suggested_server_name.load_file = "/tmp/server_names.json"
 
 ## Whether to deny messages and subscriptions if no server name configured for the MCP server.
-broker_suggested_server_name.deny_if_no_match = true
+broker_suggested_server_name.deny_if_no_match = false
 
 ## Broker suggested server name filters for MCP clients.
 broker_suggested_server_name_filters.enable = true
@@ -15,6 +15,9 @@ broker_suggested_server_name_filters.load_file = "/tmp/server_name_filters.json"
 
 ## Whether to deny messages and subscriptions if no server name filters configured for the MCP client.
 broker_suggested_server_name_filters.deny_if_no_match = true
+
+mcp_client_rbac.enable = false
+mcp_client_rbac.load_file = "/tmp/mcp_client_rbac.json"
 
 ## STDIO MCP servers
 stdio_servers {

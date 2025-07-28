@@ -11,6 +11,14 @@
     "zh": "MCP 服务名过滤器加载文件",
     "en": "Load File for MCP Server Name Filters"
   },
+  "$enable_mcp_client_rbac": {
+    "zh": "启用 MCP 客户端 RBAC",
+    "en": "Enable MCP Clients RBAC"
+  },
+  "$load_file_client_rbac": {
+    "zh": "MCP Client RBAC 加载文件",
+    "en": "Load File for MCP Client RBAC"
+  },
   "$server_name": {
     "zh": "服务名称",
     "en": "Server Name"

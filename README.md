@@ -77,14 +77,14 @@ The MCP Gateway supports Role Based Access Control (RBAC) to manage access to MC
   {
     "condition": "select * where username = 'user-1'",
     "rbac": [
-      {"server_name": "devices/vehicle/xiaopeng/EP7", "role": "admin"}
+      {"server_name": "devices/vehicle/xiaopeng/EP7", "role_name": "admin"}
     ]
   },
   {
     "condition": "select * where mcp_meta.app_id = 'app-1'",
     "rbac": [
-      {"server_name": "devices/vehicle/byd/song", "role": "admin"},
-      {"server_name": "devices/vehicle/byd/tang", "role": "user"}
+      {"server_name": "devices/vehicle/byd/song", "role_name": "admin"},
+      {"server_name": "devices/vehicle/byd/tang", "role_name": "user"}
     ]
   }
 ]
