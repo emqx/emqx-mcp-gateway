@@ -174,12 +174,13 @@ on_client_connack(ConnInfo, success, ConnAckProps) ->
                     {ok, add_broker_suggested_server_name(SuggestedName, ConnAckProps)}
             end;
         <<"mcp-client">> ->
-            ConnAckProps1 = case erlang:get(mcp_broker_suggested_server_name_filters) of
-                undefined ->
-                    ConnAckProps;
-                ServerNameFilters ->
-                    add_broker_suggested_server_name_filters(ServerNameFilters, ConnAckProps)
-            end,
+            ConnAckProps1 =
+                case erlang:get(mcp_broker_suggested_server_name_filters) of
+                    undefined ->
+                        ConnAckProps;
+                    ServerNameFilters ->
+                        add_broker_suggested_server_name_filters(ServerNameFilters, ConnAckProps)
+                end,
             case erlang:get(mcp_client_rbac_rules) of
                 undefined ->
                     {ok, ConnAckProps1};
@@ -194,11 +195,15 @@ on_client_connack(_ConnInfo, _Rc, ConnAckProps) ->
 
 authorize(#{clientid := ClientId}, #{action_type := publish}, <<"$mcp-", _/binary>> = Topic, _) ->
     Result = check_mcp_pub_acl(Topic, ClientId),
-    ?SLOG(debug, #{msg => authorize_mcp_publish, clientid => ClientId, topic => Topic, result => Result}),
+    ?SLOG(debug, #{
+        msg => authorize_mcp_publish, clientid => ClientId, topic => Topic, result => Result
+    }),
     {stop, #{result => Result}};
 authorize(#{clientid := ClientId}, #{action_type := subscribe}, <<"$mcp-", _/binary>> = Topic, _) ->
     Result = check_mcp_sub_acl(Topic, ClientId),
-    ?SLOG(debug, #{msg => authorize_mcp_subscribe, clientid => ClientId, topic => Topic, result => Result}),
+    ?SLOG(debug, #{
+        msg => authorize_mcp_subscribe, clientid => ClientId, topic => Topic, result => Result
+    }),
     {stop, #{result => Result}};
 authorize(_ClientInfo, _ActionType, _Topic, _) ->
     %% Ignore if not a MCP topic
@@ -419,12 +424,16 @@ check_mcp_sub_acl(Topic, ClientId) ->
 
 check_mcp_pub_acl(mcp_server, _Topic, _, undefined) ->
     deny_if_no_match(<<"broker_suggested_server_name">>);
-check_mcp_pub_acl(mcp_server, <<"$mcp-server/capability/", ServerIdAndName/binary>>, ServerId, ServerName) ->
+check_mcp_pub_acl(
+    mcp_server, <<"$mcp-server/capability/", ServerIdAndName/binary>>, ServerId, ServerName
+) ->
     case split_id_and_server_name(ServerIdAndName) of
         {ServerId, ServerName} -> allow;
         _ -> deny
     end;
-check_mcp_pub_acl(mcp_server, <<"$mcp-server/presence/", ServerIdAndName/binary>>, ServerId, ServerName) ->
+check_mcp_pub_acl(
+    mcp_server, <<"$mcp-server/presence/", ServerIdAndName/binary>>, ServerId, ServerName
+) ->
     case split_id_and_server_name(ServerIdAndName) of
         {ServerId, ServerName} -> allow;
         _ -> deny
@@ -443,20 +452,24 @@ check_mcp_pub_acl(mcp_client, <<"$mcp-server/", ServerIdAndName/binary>>, _, Ser
                 true -> allow;
                 false -> deny
             end;
-        _ -> deny
+        _ ->
+            deny
     end;
 check_mcp_pub_acl(mcp_client, <<"$mcp-client/capability/", McpClientId/binary>>, McpClientId, _) ->
     allow;
 check_mcp_pub_acl(mcp_client, <<"$mcp-client/presence/", McpClientId/binary>>, McpClientId, _) ->
     allow;
-check_mcp_pub_acl(mcp_client, <<"$mcp-rpc/", ClientIdServerIdName/binary>>, McpClientId, ServerNameFilters) ->
+check_mcp_pub_acl(
+    mcp_client, <<"$mcp-rpc/", ClientIdServerIdName/binary>>, McpClientId, ServerNameFilters
+) ->
     case split_clientid_server_id_name(ClientIdServerIdName) of
         {McpClientId, _, ServerName} ->
             case emqx_mcp_utils:can_topic_match_oneof(ServerName, ServerNameFilters) of
                 true -> allow;
                 false -> deny
             end;
-        _ -> deny
+        _ ->
+            deny
     end;
 check_mcp_pub_acl(_ComponentType, _Topic, _, _ServerNameOrFilters) ->
     deny.
@@ -479,32 +492,41 @@ check_mcp_sub_acl(mcp_server, <<"$mcp-rpc/", ClientIdServerIdName/binary>>, Serv
     end;
 check_mcp_sub_acl(mcp_client, _Topic, _, undefined) ->
     deny_if_no_match(<<"broker_suggested_server_name_filters">>);
-check_mcp_sub_acl(mcp_client, <<"$mcp-server/capability/", ServerIdAndName/binary>>, _, ServerNameFilters) ->
+check_mcp_sub_acl(
+    mcp_client, <<"$mcp-server/capability/", ServerIdAndName/binary>>, _, ServerNameFilters
+) ->
     case split_id_and_server_name(ServerIdAndName) of
         {_, ServerName} ->
             case emqx_mcp_utils:can_topic_match_oneof(ServerName, ServerNameFilters) of
                 true -> allow;
                 false -> deny
             end;
-        _ -> deny
+        _ ->
+            deny
     end;
-check_mcp_sub_acl(mcp_client, <<"$mcp-server/presence/", ServerIdAndName/binary>>, _, ServerNameFilters) ->
+check_mcp_sub_acl(
+    mcp_client, <<"$mcp-server/presence/", ServerIdAndName/binary>>, _, ServerNameFilters
+) ->
     case split_id_and_server_name(ServerIdAndName) of
         {_, ServerName} ->
             case emqx_mcp_utils:can_topic_match_oneof(ServerName, ServerNameFilters) of
                 true -> allow;
                 false -> deny
             end;
-        _ -> deny
+        _ ->
+            deny
     end;
-check_mcp_sub_acl(mcp_client, <<"$mcp-rpc/", ClientIdServerIdName/binary>>, McpClientId, ServerNameFilters) ->
+check_mcp_sub_acl(
+    mcp_client, <<"$mcp-rpc/", ClientIdServerIdName/binary>>, McpClientId, ServerNameFilters
+) ->
     case split_clientid_server_id_name(ClientIdServerIdName) of
         {McpClientId, _, ServerName} ->
             case emqx_mcp_utils:can_topic_match_oneof(ServerName, ServerNameFilters) of
                 true -> allow;
                 false -> deny
             end;
-        _ -> deny
+        _ ->
+            deny
     end;
 check_mcp_sub_acl(_ComponentType, _Topic, _, _ServerNameOrFilters) ->
     deny.
@@ -534,7 +556,8 @@ split_clientid_server_id_name(Str) ->
         [McpClientId, ServerIdAndName] ->
             {ServerId, ServerName} = split_id_and_server_name(ServerIdAndName),
             {McpClientId, ServerId, ServerName};
-        _ -> throw({error, {invalid_clientid_server_id_name, Str}})
+        _ ->
+            throw({error, {invalid_clientid_server_id_name, Str}})
     end.
 
 get_broker_suggested_server_name(ClientInfo, ConnInfo) ->

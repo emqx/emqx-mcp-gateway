@@ -93,11 +93,13 @@
     id := integer(),
     condition := binary(),
     selector := sql_selector(),
-    rbac := [#{
-        server_name := binary(),
-        server_name_tmpl := binary(),
-        role_name := binary()
-    }]
+    rbac := [
+        #{
+            server_name := binary(),
+            server_name_tmpl := binary(),
+            role_name := binary()
+        }
+    ]
 }.
 
 -type mcp_client_rbac_info() :: #{
@@ -172,8 +174,7 @@ add_server_name_filter_rules(Rule) ->
 match_mcp_client_rbac_rules(ConnEvent) ->
     case get_mcp_client_rbac_rules() of
         [] -> {error, not_found};
-        ClientRbacRules ->
-            match_mcp_client_rbac_rules(ClientRbacRules, ConnEvent)
+        ClientRbacRules -> match_mcp_client_rbac_rules(ClientRbacRules, ConnEvent)
     end.
 
 get_mcp_client_rbac_rules() ->
@@ -250,7 +251,9 @@ load_server_name_filters() ->
         #{<<"enable">> := false} ->
             ok;
         #{<<"enable">> := true, <<"load_file">> := File} when is_binary(File) ->
-            load_json_file(File, fun parse_server_name_filter_rule/2, fun put_server_name_filter_rules/1);
+            load_json_file(
+                File, fun parse_server_name_filter_rule/2, fun put_server_name_filter_rules/1
+            );
         _ ->
             ok
     end.
@@ -307,7 +310,9 @@ parse_server_name_rule(_, Rule) ->
     throw(#{reason => invalid_rule_format, rule => Rule}).
 
 -spec parse_server_name_filter_rule(integer(), map()) -> mcp_server_name_filter_rule().
-parse_server_name_filter_rule(Id, #{<<"condition">> := SQL, <<"server_name_filters">> := ServerNameFilters}) ->
+parse_server_name_filter_rule(Id, #{
+    <<"condition">> := SQL, <<"server_name_filters">> := ServerNameFilters
+}) ->
     %% assert that ServerNameFilters is an array
     true = is_list(ServerNameFilters),
     #{
@@ -334,7 +339,7 @@ parse_mcp_client_rbac_rule(Id, #{<<"condition">> := SQL, <<"rbac">> := Rbac}) ->
                 server_name_tmpl => bbmustache:parse_binary(ServerName),
                 role_name => RoleName
             }
-            || #{<<"server_name">> := ServerName, <<"role_name">> := RoleName} <- Rbac
+         || #{<<"server_name">> := ServerName, <<"role_name">> := RoleName} <- Rbac
         ]
     };
 parse_mcp_client_rbac_rule(_, Rule) ->
@@ -367,7 +372,7 @@ match_server_name_filter_rules(Rules, ConnEvent) ->
     RenderFun = fun(Rule, SelectedData) ->
         [
             bbmustache:compile(Tmpl, SelectedData)
-            || Tmpl <- maps:get(server_name_filters_tmpl, Rule)
+         || Tmpl <- maps:get(server_name_filters_tmpl, Rule)
         ]
     end,
     match_server_name_rules(Rules, ConnEvent, RenderFun).
@@ -377,7 +382,7 @@ match_mcp_client_rbac_rules(Rules, ConnEvent) ->
         Rbac = maps:get(rbac, Rule),
         [
             #{server_name => bbmustache:compile(Tmpl, SelectedData), role_name => Role}
-            || #{server_name_tmpl := Tmpl, role_name := Role} <- Rbac
+         || #{server_name_tmpl := Tmpl, role_name := Role} <- Rbac
         ]
     end,
     match_server_name_rules(Rules, ConnEvent, RenderFun).
