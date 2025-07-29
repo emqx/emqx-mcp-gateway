@@ -376,12 +376,19 @@ handle_mcp_rpc_message(Message, ClientIdServerIdName, McpClientId, RpcMsg, Decod
     {_, ServerId, ServerName} = split_clientid_server_id_name(ClientIdServerIdName),
     case erlang:get(mcp_component_type) of
         mcp_client ->
-            case maybe_check_rbac_permission(RpcMsg, ServerId, ServerName) of
+            case maybe_check_rbac_permission(DecodedRpcMsg, ServerId, ServerName) of
                 allow ->
                     do_handle_mcp_rpc_message(ServerName, McpClientId, RpcMsg, DecodedRpcMsg),
                     {ok, Message};
                 deny ->
                     %% disconnect the client if RBAC denies the request
+                    ?SLOG(warning, #{
+                        msg => mcp_rbac_denied,
+                        clientid => McpClientId,
+                        server_id => ServerId,
+                        server_name => ServerName,
+                        mcp_rpc_method => maps:get(method, DecodedRpcMsg, unknown)
+                    }),
                     stop_message(Message)
             end;
         _ ->
@@ -389,25 +396,19 @@ handle_mcp_rpc_message(Message, ClientIdServerIdName, McpClientId, RpcMsg, Decod
             {ok, Message}
     end.
 
-maybe_check_rbac_permission(RpcMsg, ServerId, ServerName) ->
-    case erlang:get(mcp_client_rbac_info) of
-        undefined ->
-            deny_if_no_match(<<"mcp_client_rbac">>);
-        RbacInfo ->
-            case maps:get(ServerName, RbacInfo, undefined) of
-                undefined ->
-                    deny_if_no_match(<<"mcp_client_rbac">>);
-                #{role_name := RoleName} ->
-                    case emqx_mcp_server_name_manager:get_rbac_permission(ServerId, ServerName, RoleName) of
-                        {ok, Perm} ->
-                            check_rbac_permission(RpcMsg, Perm);
-                        {error, not_found} ->
-                            deny_if_no_match(<<"mcp_client_rbac">>)
-                    end
-            end
+maybe_check_rbac_permission(DecodedRpcMsg, ServerId, ServerName) ->
+    maybe
+        RbacInfo = erlang:get(mcp_client_rbac_info),
+        true ?= (undefined =/= RbacInfo),
+        [RoleName] ?= [RN || #{role_name := RN} <- RbacInfo],
+        {ok, Perm} ?= emqx_mcp_server_name_manager:get_rbac_permission(ServerId, ServerName, RoleName),
+        check_rbac_permission(DecodedRpcMsg, Perm)
+    else
+        _ ->
+            deny_if_no_match(<<"mcp_client_rbac">>)
     end.
 
-check_rbac_permission(#{method := Method, params := Params}, Perm) ->
+check_rbac_permission(#{method := Method} = DecodedRpcMsg, Perm) ->
     #{
         allowed_methods := AllowedMethods,
         allowed_tools := AllowedTools,
@@ -415,12 +416,15 @@ check_rbac_permission(#{method := Method, params := Params}, Perm) ->
     } = Perm,
     maybe
         true ?= check_allowed_methods(Method, AllowedMethods),
+        #{} ?= Params = maps:get(params, DecodedRpcMsg, params_undefined),
         true ?= check_allowed_tools(Method, Params, AllowedTools),
         true ?= check_allowed_resources(Method, Params, AllowedResources),
         allow
     else
         false ->
-            deny
+            deny;
+        params_undefined ->
+            allow
     end.
 
 check_allowed_methods(_, all) ->
@@ -487,14 +491,14 @@ add_broker_suggested_server_name(SuggestedName, ConnAckProps) ->
     ConnAckProps#{'User-Property' => UserPropsConnAck1}.
 
 add_broker_suggested_server_name_filters(ServerNameFilters, ConnAckProps) ->
-    ServerNameFltJson = iolist_to_binary(emqx_mcp_utils:json_encode(ServerNameFilters)),
+    ServerNameFltJson = emqx_mcp_utils:json_encode(ServerNameFilters),
     UserPropsConnAck = maps:get('User-Property', ConnAckProps, []),
     UserPropsConnAck1 = [{?PROP_K_MCP_SERVER_NAME_FILETERS, ServerNameFltJson} | UserPropsConnAck],
     ConnAckProps#{'User-Property' => UserPropsConnAck1}.
 
 add_mcp_client_rbac_info(RbacInfo, ConnAckProps) ->
     UserPropsConnAck = maps:get('User-Property', ConnAckProps, []),
-    RbacInfoJson = iolist_to_binary(emqx_mcp_utils:json_encode(RbacInfo)),
+    RbacInfoJson = emqx_mcp_utils:json_encode(RbacInfo),
     UserPropsConnAck1 = [{?PROP_K_MCP_CLIENT_RBAC, RbacInfoJson} | UserPropsConnAck],
     ConnAckProps#{'User-Property' => UserPropsConnAck1}.
 

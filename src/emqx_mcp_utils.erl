@@ -7,7 +7,7 @@
 ]).
 
 json_encode(Data) ->
-    json:encode(Data).
+    iolist_to_binary(json:encode(Data)).
 
 json_decode(Data) ->
     json:decode(Data).

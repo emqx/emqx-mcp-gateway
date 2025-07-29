@@ -151,7 +151,7 @@ get_rbac_permission(ServerId, ServerName, RoleName) ->
 
 delete_rbac_permission(ServerId) ->
     %% Delete all permissions for the given ServerId
-    ets:match_delete(?TAB_RBAC_PERM, {{ServerId, '_', '_'}, '_'}),
+    ets:match_delete(?TAB_RBAC_PERM, {{ServerId, '_', '_'}, '_', '_'}),
     ok.
 
 delete_rbac_permission(ServerId, ServerName, RoleName) ->
@@ -303,7 +303,7 @@ handle_cast(_Msg, State) ->
 handle_info({'DOWN', _Ref, process, Pid, _Reason}, #{mcp_servers := Servers} = State) ->
     %% Clean up the monitor for the process
     case maps:find(Pid, Servers) of
-        {ok, {ServerId, _}} ->
+        {ok, ServerId} ->
             delete_rbac_permission(ServerId);
         error ->
             ok
