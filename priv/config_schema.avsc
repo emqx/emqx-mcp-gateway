@@ -110,6 +110,17 @@
               "required": false,
               "label": "$load_file_client_rbac"
             }
+          },
+          {
+            "name": "deny_if_no_match",
+            "type": "boolean",
+            "default": true,
+            "$ui": {
+              "component": "switch",
+              "flex": 12,
+              "required": false,
+              "label": "$deny_if_no_match"
+            }
           }
         ]
       }

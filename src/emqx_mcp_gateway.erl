@@ -13,8 +13,8 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %%--------------------------------------------------------------------
-
 -module(emqx_mcp_gateway).
+-feature(maybe_expr, enable).
 -behaviour(gen_server).
 
 %% for #message{} record
@@ -153,7 +153,7 @@ on_client_connected(ClientInfo, ConnInfo) ->
             end,
             case get_mcp_client_rbac_rules(ClientInfo, ConnInfo) of
                 {ok, RbacInfo} ->
-                    erlang:put(mcp_client_rbac_rules, RbacInfo),
+                    erlang:put(mcp_client_rbac_info, RbacInfo),
                     ok;
                 {error, not_found} ->
                     %% no rules configured
@@ -181,7 +181,7 @@ on_client_connack(ConnInfo, success, ConnAckProps) ->
                     ServerNameFilters ->
                         add_broker_suggested_server_name_filters(ServerNameFilters, ConnAckProps)
                 end,
-            case erlang:get(mcp_client_rbac_rules) of
+            case erlang:get(mcp_client_rbac_info) of
                 undefined ->
                     {ok, ConnAckProps1};
                 RbacInfo ->
@@ -210,7 +210,9 @@ authorize(_ClientInfo, _ActionType, _Topic, _) ->
     ?SLOG(debug, #{msg => ignore_not_mcp_topic}),
     ignore.
 
-on_message_publish(#message{topic = <<"$mcp-server/presence", _/binary>>} = Message) ->
+on_message_publish(#message{topic = <<"$mcp-server/presence/", ServerIdAndName/binary>>, payload = Payload} = Message) ->
+    {ServerId, ServerName} = split_id_and_server_name(ServerIdAndName),
+    ok = maybe_register_role_permissions(ServerId, ServerName, Payload),
     case erlang:get(mcp_server_presence_topic) of
         undefined ->
             {ok, Message};
@@ -302,22 +304,13 @@ on_message_publish(
         payload = RpcMsg
     } = Message
 ) ->
-    {_, _, ServerName} = split_clientid_server_id_name(ClientIdServerIdName),
-    case maybe_call_mcp_server(ServerName, {rpc, RpcMsg}) of
+    case emqx_mcp_message:decode_rpc_msg(RpcMsg) of
+        {ok, DecodedRpcMsg} ->
+            handle_mcp_rpc_message(Message, ClientIdServerIdName, McpClientId, RpcMsg, DecodedRpcMsg);
         {error, Reason} ->
-            case emqx_mcp_message:decode_rpc_msg(RpcMsg) of
-                {ok, #{type := json_rpc_request, id := Id}} ->
-                    ErrMsg = error_to_rpc_msg(Id, Reason),
-                    emqx_mcp_message:publish_mcp_server_message(
-                        ServerName, McpClientId, rpc, #{}, ErrMsg
-                    );
-                {error, Reason} ->
-                    ?SLOG(error, #{msg => decode_rpc_msg_failed, reason => Reason})
-            end;
-        _ ->
-            ok
-    end,
-    {ok, Message};
+            ?SLOG(error, #{msg => decode_rpc_msg_failed, reason => Reason}),
+            stop_message(Message)
+    end;
 on_message_publish(Message) ->
     %% Ignore other messages
     {ok, Message}.
@@ -379,6 +372,115 @@ unhook(HookPoint, MFA) ->
 %%==============================================================================
 %% Internal functions
 %%==============================================================================
+handle_mcp_rpc_message(Message, ClientIdServerIdName, McpClientId, RpcMsg, DecodedRpcMsg) ->
+    {_, ServerId, ServerName} = split_clientid_server_id_name(ClientIdServerIdName),
+    case erlang:get(mcp_component_type) of
+        mcp_client ->
+            case maybe_check_rbac_permission(RpcMsg, ServerId, ServerName) of
+                allow ->
+                    do_handle_mcp_rpc_message(ServerName, McpClientId, RpcMsg, DecodedRpcMsg),
+                    {ok, Message};
+                deny ->
+                    %% disconnect the client if RBAC denies the request
+                    stop_message(Message)
+            end;
+        _ ->
+            do_handle_mcp_rpc_message(ServerName, McpClientId, RpcMsg, DecodedRpcMsg),
+            {ok, Message}
+    end.
+
+maybe_check_rbac_permission(RpcMsg, ServerId, ServerName) ->
+    case erlang:get(mcp_client_rbac_info) of
+        undefined ->
+            deny_if_no_match(<<"mcp_client_rbac">>);
+        RbacInfo ->
+            case maps:get(ServerName, RbacInfo, undefined) of
+                undefined ->
+                    deny_if_no_match(<<"mcp_client_rbac">>);
+                #{role_name := RoleName} ->
+                    case emqx_mcp_server_name_manager:get_rbac_permission(ServerId, ServerName, RoleName) of
+                        {ok, Perm} ->
+                            check_rbac_permission(RpcMsg, Perm);
+                        {error, not_found} ->
+                            deny_if_no_match(<<"mcp_client_rbac">>)
+                    end
+            end
+    end.
+
+check_rbac_permission(#{method := Method, params := Params}, Perm) ->
+    #{
+        allowed_methods := AllowedMethods,
+        allowed_tools := AllowedTools,
+        allowed_resources := AllowedResources
+    } = Perm,
+    maybe
+        true ?= check_allowed_methods(Method, AllowedMethods),
+        true ?= check_allowed_tools(Method, Params, AllowedTools),
+        true ?= check_allowed_resources(Method, Params, AllowedResources),
+        allow
+    else
+        false ->
+            deny
+    end.
+
+check_allowed_methods(_, all) ->
+    true;
+check_allowed_methods(Method, AllowedMethods) ->
+    lists:member(Method, AllowedMethods).
+
+check_allowed_tools(<<"tools/call">>, _, all) ->
+    true;
+check_allowed_tools(<<"tools/call">>, #{<<"name">> := ToolName}, AllowedTools) ->
+    lists:member(ToolName, AllowedTools);
+check_allowed_tools(_, _, _) ->
+    true.
+
+check_allowed_resources(Method, _, all) when Method =:= <<"resources/read">>; Method =:= <<"resources/subscribe">>; Method =:= <<"resources/unsubscribe">>  ->
+    true;
+check_allowed_resources(Method, #{<<"uri">> := URI}, AllowedResources) when Method =:= <<"resources/read">>; Method =:= <<"resources/subscribe">>; Method =:= <<"resources/unsubscribe">> ->
+    lists:member(URI, AllowedResources);
+check_allowed_resources(_, _, _) ->
+    true.
+
+do_handle_mcp_rpc_message(ServerName, McpClientId, RpcMsg, DecodedRpcMsg) ->
+    case maybe_call_mcp_server(ServerName, {rpc, RpcMsg}) of
+        {error, Reason} ->
+            case DecodedRpcMsg of
+                #{type := json_rpc_request, id := Id} ->
+                    ErrMsg = error_to_rpc_msg(Id, Reason),
+                    emqx_mcp_message:publish_mcp_server_message(
+                        ServerName, McpClientId, rpc, #{}, ErrMsg
+                    );
+                _ ->
+                    ?SLOG(error, #{msg => call_mcp_server_failed, reason => Reason})
+            end;
+        _ ->
+            ok
+    end.
+
+stop_message(#message{headers = Headers} = Message) ->
+    {stop, emqx_message:set_headers(Headers#{
+                allow_publish => false,
+                should_disconnect => true
+            }, Message)}.
+
+maybe_register_role_permissions(_, _, <<>>) ->
+    ok;
+maybe_register_role_permissions(ServerId, ServerName, Payload) ->
+    case erlang:get(mcp_component_type) of
+        mcp_client ->
+            ok;
+        mcp_server ->
+            case emqx_mcp_message:decode_rpc_msg(Payload) of
+                {ok, #{params := #{<<"meta">> := #{<<"rbac">> := #{<<"roles">> := RbacPerms}}}}} ->
+                    emqx_mcp_server_name_manager:add_raw_rbac_permissions(ServerId, ServerName, RbacPerms);
+                {ok, _} ->
+                    ok;
+                {error, Reason} ->
+                    ?SLOG(error, #{msg => decode_rpc_msg_failed, reason => Reason})
+            end
+    end.
+
 add_broker_suggested_server_name(SuggestedName, ConnAckProps) ->
     UserPropsConnAck = maps:get('User-Property', ConnAckProps, []),
     UserPropsConnAck1 = [{?PROP_K_MCP_SERVER_NAME, SuggestedName} | UserPropsConnAck],
@@ -446,14 +548,10 @@ check_mcp_pub_acl(mcp_server, <<"$mcp-rpc/", ClientIdServerIdName/binary>>, Serv
 check_mcp_pub_acl(mcp_client, _Topic, _, undefined) ->
     deny_if_no_match(<<"broker_suggested_server_name_filters">>);
 check_mcp_pub_acl(mcp_client, <<"$mcp-server/", ServerIdAndName/binary>>, _, ServerNameFilters) ->
-    case split_id_and_server_name(ServerIdAndName) of
-        {_, ServerName} ->
-            case emqx_mcp_utils:can_topic_match_oneof(ServerName, ServerNameFilters) of
-                true -> allow;
-                false -> deny
-            end;
-        _ ->
-            deny
+    {_, ServerName} = split_id_and_server_name(ServerIdAndName),
+    case emqx_mcp_utils:can_topic_match_oneof(ServerName, ServerNameFilters) of
+        true -> allow;
+        false -> deny
     end;
 check_mcp_pub_acl(mcp_client, <<"$mcp-client/capability/", McpClientId/binary>>, McpClientId, _) ->
     allow;
@@ -495,26 +593,18 @@ check_mcp_sub_acl(mcp_client, _Topic, _, undefined) ->
 check_mcp_sub_acl(
     mcp_client, <<"$mcp-server/capability/", ServerIdAndName/binary>>, _, ServerNameFilters
 ) ->
-    case split_id_and_server_name(ServerIdAndName) of
-        {_, ServerName} ->
-            case emqx_mcp_utils:can_topic_match_oneof(ServerName, ServerNameFilters) of
-                true -> allow;
-                false -> deny
-            end;
-        _ ->
-            deny
+    {_, ServerName} = split_id_and_server_name(ServerIdAndName),
+    case emqx_mcp_utils:can_topic_match_oneof(ServerName, ServerNameFilters) of
+        true -> allow;
+        false -> deny
     end;
 check_mcp_sub_acl(
     mcp_client, <<"$mcp-server/presence/", ServerIdAndName/binary>>, _, ServerNameFilters
 ) ->
-    case split_id_and_server_name(ServerIdAndName) of
-        {_, ServerName} ->
-            case emqx_mcp_utils:can_topic_match_oneof(ServerName, ServerNameFilters) of
-                true -> allow;
-                false -> deny
-            end;
-        _ ->
-            deny
+    {_, ServerName} = split_id_and_server_name(ServerIdAndName),
+    case emqx_mcp_utils:can_topic_match_oneof(ServerName, ServerNameFilters) of
+        true -> allow;
+        false -> deny
     end;
 check_mcp_sub_acl(
     mcp_client, <<"$mcp-rpc/", ClientIdServerIdName/binary>>, McpClientId, ServerNameFilters

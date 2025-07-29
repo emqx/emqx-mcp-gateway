@@ -24,7 +24,17 @@
 
 %% API
 -export([
-    start_link/0
+    start_link/0,
+    create_tables/0
+]).
+
+-export([
+    add_rbac_permission/4,
+    get_rbac_permission/3,
+    delete_rbac_permission/1,
+    delete_rbac_permission/3,
+    add_raw_rbac_permissions/3,
+    parse_rbac_permission/1
 ]).
 
 -export([
@@ -64,9 +74,16 @@
 
 %% Types
 -define(SERVER, ?MODULE).
+-define(TAB_RBAC_PERM, mcp_rbac_permission).
 -define(TAB_SERVER_NAME, {?MODULE, mcp_server_name}).
 -define(TAB_SERVER_NAME_FILTER, {?MODULE, mcp_server_name_filter}).
 -define(TAB_MCP_CLIENT_RBAC, {?MODULE, mcp_client_rbac}).
+
+-type rbac_permission() :: #{
+    allowed_methods := [binary()] | all,
+    allowed_tools := [binary()] | all,
+    allowed_resources := [binary()] | all
+}.
 
 -type sql_selector() :: #{
     fields := term(),
@@ -113,10 +130,62 @@
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
+create_tables() ->
+    case ets:info(?TAB_RBAC_PERM) of
+        undefined -> ets:new(?TAB_RBAC_PERM, [named_table, public, set]);
+        _ -> ok
+    end.
+
+%%--------------------------------------------------------------------
+%% RBAC Permissions
+%%--------------------------------------------------------------------
+-spec add_rbac_permission(binary(), binary(), binary(), rbac_permission()) -> ok.
+add_rbac_permission(ServerId, ServerName, RoleName, Perm) ->
+    gen_server:call(?SERVER, {add_rbac_permission, self(), ServerId, ServerName, RoleName, Perm}).
+
+get_rbac_permission(ServerId, ServerName, RoleName) ->
+    case ets:lookup(?TAB_RBAC_PERM, {ServerId, ServerName, RoleName}) of
+        [] -> {error, not_found};
+        [{_, Perm, _}] -> {ok, Perm}
+    end.
+
+delete_rbac_permission(ServerId) ->
+    %% Delete all permissions for the given ServerId
+    ets:match_delete(?TAB_RBAC_PERM, {{ServerId, '_', '_'}, '_'}),
+    ok.
+
+delete_rbac_permission(ServerId, ServerName, RoleName) ->
+    ets:delete(?TAB_RBAC_PERM, {ServerId, ServerName, RoleName}),
+    ok.
+
+-spec add_raw_rbac_permissions(binary(), binary(), [map()]) -> ok.
+add_raw_rbac_permissions(ServerId, ServerName, RbacPerms) ->
+    lists:foreach(fun(#{<<"name">> := RoleName} = RbacPerm) ->
+            Perm = parse_rbac_permission(RbacPerm),
+            add_rbac_permission(ServerId, ServerName, RoleName, Perm)
+        end, RbacPerms).
+
+-spec parse_rbac_permission(map()) -> rbac_permission().
+parse_rbac_permission(#{
+    <<"allowed_methods">> := AllowedMethods,
+    <<"allowed_tools">> := AllowedTools,
+    <<"allowed_resources">> := AllowedResources
+}) ->
+    #{
+        allowed_methods => parse_perm(AllowedMethods),
+        allowed_tools => parse_perm(AllowedTools),
+        allowed_resources => parse_perm(AllowedResources)
+    }.
+
+parse_perm(Perm) when is_list(Perm) ->
+    Perm;
+parse_perm(<<"all">>) ->
+    all.
+
 %%--------------------------------------------------------------------
 %% Server Name Rules
 %%--------------------------------------------------------------------
--spec match_server_name_rules(binary()) -> {ok, binary()} | {error, term()}.
+-spec match_server_name_rules(map()) -> {ok, binary()} | {error, term()}.
 match_server_name_rules(ConnEvent) ->
     case get_server_name_rules() of
         [] ->
@@ -143,7 +212,7 @@ delete_server_name_rule(Id) ->
 %%--------------------------------------------------------------------
 %% Server Name Filter Rules
 %%--------------------------------------------------------------------
--spec match_server_name_filter_rules(binary()) -> {ok, [binary()]} | {error, term()}.
+-spec match_server_name_filter_rules(map()) -> {ok, [binary()]} | {error, term()}.
 match_server_name_filter_rules(ConnEvent) ->
     case get_server_name_filter_rules() of
         [] ->
@@ -170,7 +239,7 @@ add_server_name_filter_rules(Rule) ->
 %%--------------------------------------------------------------------
 %% MCP client RBAC
 %%--------------------------------------------------------------------
--spec match_mcp_client_rbac_rules(binary()) -> {ok, [mcp_client_rbac_info()]} | {error, term()}.
+-spec match_mcp_client_rbac_rules(map()) -> {ok, [mcp_client_rbac_info()]} | {error, term()}.
 match_mcp_client_rbac_rules(ConnEvent) ->
     case get_mcp_client_rbac_rules() of
         [] -> {error, not_found};
@@ -196,9 +265,9 @@ add_mcp_client_rbac_rule(Rule) ->
 %% Gen Server Callbacks
 %%--------------------------------------------------------------------
 init([]) ->
-    {ok, #{}, {continue, load_server_names}}.
+    {ok, #{mcp_servers => #{}}, {continue, init_tasks}}.
 
-handle_continue(load_server_names, State) ->
+handle_continue(init_tasks, State) ->
     maybe
         ok ?= load_server_names(),
         ok ?= load_server_name_filters(),
@@ -208,14 +277,38 @@ handle_continue(load_server_names, State) ->
         {error, Reason} ->
             ?SLOG(error, #{msg => load_server_name_files_failed, reason => Reason})
     end,
-    {noreply, State}.
+    {noreply, monitor_mc_servers(State)}.
 
+monitor_mc_servers(#{mcp_servers := Servers} = State) ->
+    NewServers = ets:foldl(
+        fun({{ServerId, _, _}, _, Pid}, ServersAcc) ->
+            erlang:monitor(process, Pid),
+            ServersAcc#{Pid => ServerId}
+        end,
+        Servers,
+        ?TAB_RBAC_PERM
+    ),
+    State#{mcp_servers => NewServers}.
+
+handle_call({add_rbac_permission, Pid, ServerId, ServerName, RoleName, Perm}, _From, #{mcp_servers := Servers} = State) ->
+    erlang:monitor(process, Pid),
+    ets:insert(?TAB_RBAC_PERM, {{ServerId, ServerName, RoleName}, Perm, Pid}),
+    {reply, ok, State#{mcp_servers => Servers#{Pid => ServerId}}};
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+handle_info({'DOWN', _Ref, process, Pid, _Reason}, #{mcp_servers := Servers} = State) ->
+    %% Clean up the monitor for the process
+    case maps:find(Pid, Servers) of
+        {ok, {ServerId, _}} ->
+            delete_rbac_permission(ServerId);
+        error ->
+            ok
+    end,
+    {noreply, State};
 handle_info(_Info, State) ->
     {noreply, State}.
 

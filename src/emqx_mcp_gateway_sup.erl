@@ -25,6 +25,7 @@
 -define(SERVER, ?MODULE).
 
 start_link() ->
+    _ = emqx_mcp_server_name_manager:create_tables(),
     supervisor:start_link({local, ?SERVER}, ?MODULE, []).
 
 init([]) ->
@@ -53,3 +54,4 @@ init([]) ->
     },
     ChildSpecs = [ServerSup, Dispatcher, ServerNameManager],
     {ok, {SupFlags, ChildSpecs}}.
+
