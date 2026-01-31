@@ -7,7 +7,7 @@ The MCP Gateway is an EMQX plugin that:
 3. Simplifies the process of configuring ACLs for both MCP servers and clients.
 4. Offers role-based access control.
 
-Below is a diagram illustrating how an MCP over MQTT client interacts with clients using other protocols through this gateway plugin:
+Below is a diagram illustrating how an MCP over MQTT client interacts with MCP servers using other protocols through this gateway plugin:
 
 ```
                                                                ┌────────────────┐         
